@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>掛け置き管理ツール</title>
+<style>
+:root{
+  --bg:#f4f6f9;--card:#fff;--ink:#1d2330;--sub:#5b6577;--line:#d5dbe5;
+  --navy:#1F4E78;--ok:#1e8e3e;--okbg:#e6f4ea;--warn:#b06000;--warnbg:#fef7e0;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font-family:"Yu Gothic UI","游ゴシック","Meiryo",sans-serif;line-height:1.6}
+header{background:var(--navy);color:#fff;padding:18px 16px}
+header .in{max-width:1000px;margin:0 auto}
+header h1{margin:0;font-size:24px}
+header p{margin:4px 0 0;font-size:14px;opacity:.85}
+main{max-width:1000px;margin:0 auto;padding:20px 16px 40px}
+h2{font-size:17px;color:var(--navy);margin:24px 0 10px;
+  border-left:5px solid var(--navy);padding-left:8px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:14px}
+.card{display:flex;flex-direction:column;background:var(--card);border:1px solid var(--line);
+  border-radius:10px;padding:16px;text-decoration:none;color:inherit;min-height:170px}
+a.card{border-top:6px solid var(--navy);transition:box-shadow .15s,transform .15s}
+a.card:hover,a.card:focus-visible{box-shadow:0 4px 14px rgba(31,78,120,.2);transform:translateY(-2px);outline:none}
+.card .no{font-size:12px;color:var(--sub)}
+.card h3{margin:2px 0 6px;font-size:20px}
+.card .desc{font-size:14px;color:var(--sub);flex:1;margin:0}
+.card .foot{display:flex;justify-content:space-between;align-items:center;margin-top:12px;gap:8px}
+.btn{background:var(--navy);color:#fff;border-radius:8px;padding:10px 18px;font-size:16px;font-weight:bold}
+.last{font-size:12px;color:var(--sub)}
+.tag{font-size:12px;font-weight:bold;border-radius:20px;padding:2px 10px;white-space:nowrap}
+.tag.ok{background:var(--okbg);color:var(--ok)}
+.tag.warn{background:var(--warnbg);color:var(--warn)}
+.card.soon{border-style:dashed;border-top:6px dashed #b8c2d1;background:#fafbfc}
+.card.soon h3{color:var(--sub)}
+.note{margin-top:28px;font-size:13px;color:var(--sub);background:var(--card);
+  border:1px solid var(--line);border-radius:8px;padding:12px 14px}
+</style>
+</head>
+<body>
+<header><div class="in">
+  <h1>掛け置き管理ツール</h1>
+  <p>使うツールのボタンを押してください。</p>
+</div></header>
+
+<main>
+  <h2>使えるツール</h2>
+  <div class="grid" id="ready"></div>
+
+  <h2>準備中のツール</h2>
+  <div class="grid" id="soon"></div>
+
+  <div class="note">
+    「前回」は、この端末でそのツールを開いた日時です。
+  </div>
+</main>
+
+<script>
+/*
+  ツールの一覧。ツールを増やすときはここに1行足すだけでよい。
+  file : リポジトリに置いたHTMLのファイル名（そのまま日本語でよい）
+  ready: true なら「使えるツール」、false なら「準備中」に出る
+*/
+var TOOLS = [
+  {file:"内示取込ツール.html", name:"内示 取込ツール", ready:true,
+   desc:"客先の3か月内示（CSV／PDF）を読み込んで、掛け置き作業の「管理シート」(Excel) を出します。"},
+  {file:"リミット表作成ツール.html", name:"リミット表 作成ツール", ready:true,
+   desc:"掛け置き管理表のデータから「リミット表」を作り、Excelに出したり印刷したりします。"},
+  {file:"", name:"協豊向け 現場管理シート作成", ready:false,
+   desc:"協豊の内示CSV（3か月）から、月ごと・週別のシートを作ります。土曜便は別に管理。"},
+  {file:"", name:"FTS広田向け 現場管理シート作成", ready:false,
+   desc:"FTS広田専用の現場管理シートを作ります。"},
+  {file:"", name:"三五向け 現場管理シート作成", ready:false,
+   desc:"PDF「部品納入依頼表」から週ごとのシートを作ります（支給先「1」だけ数える）。"},
+  {file:"", name:"塗装管理表", ready:false,
+   desc:"受注データと朝8時の在庫数（箱）から、基準在庫にするための塗装数を決めます。"}
+];
+
+var STORE_KEY = "dashboard_lastOpened";
+
+function loadLast(){
+  try{ return JSON.parse(localStorage.getItem(STORE_KEY)) || {}; }catch(e){ return {}; }
+}
+function saveLast(file){
+  try{
+    var d = loadLast(); d[file] = Date.now();
+    localStorage.setItem(STORE_KEY, JSON.stringify(d));
+  }catch(e){}
+}
+function fmt(t){
+  var d = new Date(t);
+  function p(n){ return (n<10?"0":"")+n; }
+  return (d.getMonth()+1)+"/"+d.getDate()+" "+p(d.getHours())+":"+p(d.getMinutes());
+}
+function esc(s){
+  return String(s).replace(/[&<>"]/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c];});
+}
+
+function render(){
+  var last = loadLast(), ready = "", soon = "", n = 0;
+  TOOLS.forEach(function(t){
+    if(t.ready){
+      n++;
+      ready += '<a class="card" href="'+encodeURIComponent(t.file)+'" data-file="'+esc(t.file)+'">'
+        + '<span class="no">ツール '+n+'</span>'
+        + '<h3>'+esc(t.name)+'</h3>'
+        + '<p class="desc">'+esc(t.desc)+'</p>'
+        + '<div class="foot"><span class="last">'
+        + (last[t.file] ? "前回："+fmt(last[t.file]) : '<span class="tag ok">使えます</span>')
+        + '</span><span class="btn">開く ▶</span></div></a>';
+    }else{
+      soon += '<div class="card soon">'
+        + '<h3>'+esc(t.name)+'</h3>'
+        + '<p class="desc">'+esc(t.desc)+'</p>'
+        + '<div class="foot"><span class="tag warn">準備中</span></div></div>';
+    }
+  });
+  document.getElementById("ready").innerHTML = ready;
+  document.getElementById("soon").innerHTML = soon;
+  document.getElementById("soon").previousElementSibling.style.display = soon ? "" : "none";
+}
+
+document.addEventListener("click", function(e){
+  var a = e.target.closest("a.card");
+  if(a) saveLast(a.getAttribute("data-file"));
+});
+window.addEventListener("pageshow", render);
+render();
+</script>
+</body>
+</html>
