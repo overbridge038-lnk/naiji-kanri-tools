@@ -83,7 +83,7 @@
   <div class="steps">
     <span><b>1</b>掛け置き管理表データ(.xlsx)をドロップ</span>
     <span><b>2</b>異常（赤・黄）を確認</span>
-    <span><b>3</b>Excel出力 または 印刷</span>
+    <span><b>3</b>Excel出力・印刷・HTML出力（現場のタブレットで済みチェック）</span>
   </div>
 </header>
 <main>
@@ -112,6 +112,7 @@
       <div style="flex:1"></div>
       <button class="btn-main" id="btnXlsx" disabled>Excel出力（リミット表）</button>
       <button class="btn-sub" id="btnPrint" disabled>印刷</button>
+      <button class="btn-main" id="btnHtml" disabled style="background:var(--navy)">HTML出力（現場用・済みチェック）</button>
     </div>
     <div id="ackRow" class="hidden" style="margin-top:10px;color:var(--ng);font-weight:bold">
       <label><input type="checkbox" id="ack" style="transform:scale(1.4);margin-right:8px">赤（NG）の内容を確認しました。NGの品番を除いたまま出力します</label>
@@ -394,10 +395,11 @@ function buildModel(p){
         const it = byT[ti][k];
         const sp = it && it.split>1 ? (" split"+Math.min(it.split,3)) : "";
         if(it){
-          put(r+k,gcol(ti,0), it.part, "body"+sp+bb);
-          put(r+k,gcol(ti,1), fmtHour(it.hours), "body"+sp+bb);
-          put(r+k,gcol(ti,2), it.hanger==null?"":String(it.hanger).replace(/[　]+/g,""), "body"+bb);
-          put(r+k,gcol(ti,3), roundQty(it.qtyRaw), "body"+bb, {num:true});
+          const key = {key: a.area+"|"+m+"|"+it.part+"|"+k, lim: m};   // 現場用HTMLの「済み」チェック用
+          put(r+k,gcol(ti,0), it.part, "body"+sp+bb, Object.assign({pk:true}, key));
+          put(r+k,gcol(ti,1), fmtHour(it.hours), "body"+sp+bb, key);
+          put(r+k,gcol(ti,2), it.hanger==null?"":String(it.hanger).replace(/[　]+/g,""), "body"+bb, key);
+          put(r+k,gcol(ti,3), roundQty(it.qtyRaw), "body"+bb, Object.assign({num:true}, key));
           timeTotal[ti].h += it.hours||0; timeTotal[ti].n++;
         }else{
           for(let q=0;q<4;q++) put(r+k,gcol(ti,q),"", "body"+bb);
@@ -425,7 +427,9 @@ function buildModel(p){
 }
 
 /* ---------- 画面に表を描く ---------- */
-function renderTable(M){
+function renderTable(M){ $("lt").innerHTML = tableHtml(M, false); }
+/* field=true のときは、品番のセルに「済み」チェック用の印（data-k）を付ける */
+function tableHtml(M, field){
   const covered = new Set(), span = {};
   for(const g of M.merges){
     span[g.r1+","+g.c1] = {rs:g.r2-g.r1+1, cs:g.c2-g.c1+1};
@@ -440,11 +444,13 @@ function renderTable(M){
       const sp = span[r+","+c];
       const attr = sp ? (sp.rs>1?` rowspan="${sp.rs}"`:"")+(sp.cs>1?` colspan="${sp.cs}"`:"") : "";
       if(!cell){ h += `<td class="blank"${attr}></td>`; continue; }
-      h += `<td class="${cell.st}"${attr}>${cell.v==null?"":esc(cell.v)}</td>`;
+      const fk = field && cell.key ? ` data-k="${esc(cell.key)}" data-lim="${cell.lim}"` : "";
+      const st = cell.st + (field && cell.pk ? " pk" : "");
+      h += `<td class="${st}"${attr}${fk}>${cell.v==null?"":esc(cell.v)}</td>`;
     }
     h += "</tr>";
   }
-  $("lt").innerHTML = h;
+  return h;
 }
 
 /* ---------- 異常リスト・KPI・山積み ---------- */
@@ -485,7 +491,7 @@ function renderSide(p, M){
 function updateButtons(){
   const hasNg = parsed && parsed.issues.some(x=>x.lv==="ng");
   const ok = !!model && (!hasNg || $("ack").checked);
-  $("btnXlsx").disabled = !ok; $("btnPrint").disabled = !model;
+  $("btnXlsx").disabled = !ok; $("btnHtml").disabled = !ok; $("btnPrint").disabled = !model;
 }
 
 function refresh(){
@@ -580,6 +586,139 @@ async function exportXlsx(){
 }
 
 /* =========================================================
+   4b) 現場用HTML（タブレットで開き、品番をタップして「済み」を付ける）
+   - 1ファイルで完結・ネット不要。済みの記録はその端末のブラウザに日付ごとに保存
+   ========================================================= */
+const FIELD_CSS = `
+:root{--navy:#1F4E78;--navy2:#D9E1F2;--ok:#1e8e3e;--okbg:#e6f4ea;--ng:#d93025;--ngbg:#fce8e6;--line:#d5dbe5;--sub:#5b6577;--split2:#FFFF00;--split3:#FFF2CC}
+*{box-sizing:border-box}
+body{margin:0;background:#f4f6f9;color:#1d2330;font-family:"Yu Gothic UI","游ゴシック","Meiryo",sans-serif;font-size:15px}
+header{position:sticky;top:0;z-index:5;background:var(--navy);color:#fff;padding:10px 16px;display:flex;gap:16px;align-items:center;flex-wrap:wrap}
+header h1{margin:0;font-size:20px}
+.prog{flex:1;min-width:240px}
+.prog .txt{font-size:18px;font-weight:bold}
+.prog .bar{height:14px;background:rgba(255,255,255,.3);border-radius:7px;overflow:hidden;margin-top:4px}
+.prog .bar div{height:100%;background:#7ee08f;width:0;transition:width .3s}
+.clock{font-size:22px;font-weight:bold;font-variant-numeric:tabular-nums}
+header button{font-family:inherit;font-size:14px;padding:8px 12px;border-radius:6px;border:1px solid #fff;background:transparent;color:#fff;cursor:pointer}
+.chips{display:flex;gap:8px;flex-wrap:wrap;padding:10px 16px}
+.chip{border-radius:8px;padding:6px 12px;font-weight:bold;background:#fff;border:2px solid var(--line)}
+.chip.all{background:var(--okbg);border-color:var(--ok);color:var(--ok)}
+.chip.late{background:var(--ngbg);border-color:var(--ng);color:var(--ng)}
+.help{padding:0 16px 8px;color:var(--sub);font-size:13px}
+.wrap{overflow:auto;margin:0 16px 16px;border:1px solid var(--line);border-radius:8px;background:#fff}
+table.lt{border-collapse:collapse;font-size:14px;white-space:nowrap}
+table.lt td{border:1px solid #9aa5b5;padding:6px 8px;text-align:center;vertical-align:middle;min-width:44px}
+table.lt td.title{font-size:22px;font-weight:bold;border:none;text-align:left}
+table.lt td.blank{border:none}
+table.lt td.hdr{background:var(--navy);color:#fff;font-weight:bold;font-size:15px}
+table.lt td.sub{background:var(--navy2);font-weight:bold}
+table.lt td.area{font-size:20px;font-weight:bold;background:#f7f9fc}
+table.lt td.split2{background:var(--split2)}
+table.lt td.split3{background:var(--split3)}
+table.lt td.total{background:#f2f2f2;font-weight:bold}
+table.lt td.note{border:none;text-align:left;color:#333}
+table.lt td.bb{border-bottom:3px solid #333}
+table.lt td.hdr.corner{white-space:normal;min-width:120px}
+table.lt td[data-k]{cursor:pointer;-webkit-tap-highlight-color:rgba(31,78,120,.2);user-select:none}
+table.lt td.pk{font-weight:bold;font-size:16px;text-decoration:underline dotted #8aa4c4}
+table.lt td.late{background:var(--ngbg)!important;color:var(--ng)}
+table.lt td.done{background:#d9d9d9!important;color:#777}
+table.lt td.pk.done{text-decoration:line-through}
+.stamp{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:4px;background:var(--ok);color:#fff;font-size:12px;text-decoration:none}
+@media print{
+  @page{size:A3 landscape;margin:8mm}
+  body{background:#fff} header{position:static} header button,.help{display:none}
+  .wrap{border:none;overflow:visible;margin:0}
+  table.lt{font-size:11px}
+  *{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+}`;
+
+/* 現場用HTMLの中で動くプログラム（この関数の中身がそのままファイルに入る） */
+function fieldApp(){
+  const D = JSON.parse(document.getElementById("limit-data").textContent);
+  const pad = n => String(n).padStart(2,"0");
+  const today = () => { const d=new Date(); return d.getFullYear()+"-"+pad(d.getMonth()+1)+"-"+pad(d.getDate()); };
+  const key = () => "limitDone:" + D.id + ":" + today();   // 日付が変わると、新しい日の記録になる
+  const load = () => { try{ return JSON.parse(localStorage.getItem(key())||"{}"); }catch(e){ return {}; } };
+  const save = o => { try{ localStorage.setItem(key(), JSON.stringify(o)); }catch(e){ alert("この端末では記録を保存できません（プライベートモードなど）。画面を閉じると済みが消えます"); } };
+  let done = load();
+  const cells = [...document.querySelectorAll("td[data-k]")];
+  cells.forEach(td => { if(td.classList.contains("pk")) td.dataset.p = td.textContent; });
+  const keys = [...new Set(cells.map(td=>td.dataset.k))];
+  const limOf = {}; cells.forEach(td => limOf[td.dataset.k] = +td.dataset.lim);
+  const fmt = m => Math.floor(m/60) + ":" + pad(m%60);
+
+  function render(){
+    const now = new Date(), nowM = now.getHours()*60 + now.getMinutes();
+    document.getElementById("clock").textContent = now.getHours() + ":" + pad(now.getMinutes());
+    document.getElementById("date").textContent = today().replace(/-/g,"/");
+    cells.forEach(td => {
+      const k = td.dataset.k, isDone = !!done[k], late = !isDone && nowM > limOf[k];
+      td.classList.toggle("done", isDone);
+      td.classList.toggle("late", late);
+      if(td.classList.contains("pk")){
+        td.textContent = td.dataset.p;
+        if(isDone){ const s=document.createElement("span"); s.className="stamp"; s.textContent="済 "+done[k]; td.appendChild(s); }
+      }
+    });
+    const n = keys.filter(k=>done[k]).length, all = keys.length, pct = all ? Math.round(n/all*100) : 0;
+    document.getElementById("progTxt").textContent = `済み ${n} ／ ${all} 品番（${pct}%）` + (n===all && all ? "　全部完了！" : "");
+    document.getElementById("progBar").style.width = pct + "%";
+    const times = [...new Set(keys.map(k=>limOf[k]))].sort((a,b)=>a-b);
+    document.getElementById("chips").innerHTML = times.map(m => {
+      const ks = keys.filter(k=>limOf[k]===m), d = ks.filter(k=>done[k]).length;
+      const cls = d===ks.length ? "all" : (nowM > m ? "late" : "");
+      return `<span class="chip ${cls}">${fmt(m)}　${d}/${ks.length}${d===ks.length?" ✓":(nowM>m?" 遅れ":"")}</span>`;
+    }).join("");
+  }
+  document.querySelector("table.lt").addEventListener("click", e => {
+    const td = e.target.closest("td[data-k]"); if(!td) return;
+    const k = td.dataset.k, part = k.split("|")[2];
+    done = load();
+    if(done[k]){ if(!confirm(`「${part}」の済みを取り消しますか？`)) return; delete done[k]; }
+    else { const d=new Date(); done[k] = d.getHours()+":"+pad(d.getMinutes()); }
+    save(done); render();
+  });
+  document.getElementById("btnReset").addEventListener("click", () => {
+    if(!confirm("今日の済みを全部消して、最初からにしますか？")) return;
+    done = {}; save(done); render();
+  });
+  window.addEventListener("storage", () => { done = load(); render(); });
+  render(); setInterval(render, 30000);
+}
+
+function exportHtml(){
+  const M = model;
+  const month = $("month").value.trim(), title = $("title").value.trim();
+  const keys = M.rows.flat().filter(c=>c && c.pk).map(c=>c.key);
+  // 同じ表を作り直しても済みの記録が引き継がれるよう、月度・表題・品番の並びから印（id）を作る
+  let h = 0; for(const ch of month+"|"+title+"|"+keys.join(",")) h = (h*31 + ch.charCodeAt(0)) >>> 0;
+  const data = JSON.stringify({ id: h.toString(36) }).replace(/</g,"\\u003c");
+  const page = `<!DOCTYPE html>
+<html lang="ja"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${esc(month)} ${esc(title)} リミット表</title><style>${FIELD_CSS}</style></head>
+<body>
+<header>
+  <h1>${esc(month)} ${esc(title)}</h1>
+  <div class="prog"><div class="txt" id="progTxt"></div><div class="bar"><div id="progBar"></div></div></div>
+  <div><div id="date" style="font-size:12px;opacity:.85"></div><div class="clock" id="clock"></div></div>
+  <button id="btnReset">今日の済みをリセット</button>
+  <button onclick="window.print()">印刷</button>
+</header>
+<div class="chips" id="chips"></div>
+<div class="help">作業が終わったら<b>品番をタップ</b>すると「済」が付きます（もう一度タップで取り消し）。赤＝リミット時刻を過ぎて未完了。記録はこの端末に日付ごとに残ります。</div>
+<div class="wrap"><table class="lt">${tableHtml(M, true)}</table></div>
+<script type="application/json" id="limit-data">${data}<\/script>
+<script>(${fieldApp.toString()})();<\/script>
+</body></html>`;
+  const blob = new Blob([page], {type:"text/html"});
+  const a = document.createElement("a"); a.href = URL.createObjectURL(blob);
+  a.download = (month + "_" + title + "_リミット表.html").replace(/[\\/:*?"<>|]/g,"_");
+  document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href), 5000);
+}
+
+/* =========================================================
    5) 画面操作
    ========================================================= */
 async function handleFile(file){
@@ -614,6 +753,7 @@ document.addEventListener("drop", e=>{ const f=e.dataTransfer.files[0]; if(f) ha
 $("ack").addEventListener("change", updateButtons);
 $("btnXlsx").addEventListener("click", exportXlsx);
 $("btnPrint").addEventListener("click", ()=>window.print());
+$("btnHtml").addEventListener("click", exportHtml);
 loadPrefs();
 </script>
 </body>
