@@ -636,11 +636,22 @@ table.lt td.ins-before{box-shadow:inset 0 4px 0 #1a73e8}
 table.lt td.ins-after{box-shadow:inset 0 -4px 0 #1a73e8}
 table.lt td[data-k]{-webkit-touch-callout:none;user-select:none;-webkit-user-select:none}
 body.drag-on{user-select:none;-webkit-user-select:none}
+#trash{display:none;position:fixed;z-index:15;left:50%;bottom:18px;transform:translateX(-50%);align-items:center;gap:10px;padding:14px 26px;border-radius:40px;background:#fff;border:3px dashed var(--ng);color:var(--ng);font-size:30px;font-weight:bold;box-shadow:0 6px 18px rgba(0,0,0,.25)}
+#trash span{font-size:15px}
+body.drag-on #trash{display:flex}
+#trash.over{background:var(--ng);color:#fff;border-style:solid;transform:translateX(-50%) scale(1.12)}
+#ghost.del{background:var(--ng)}
+#rmDlg{display:none;position:fixed;top:0;left:0;right:0;bottom:0;z-index:30;background:rgba(0,0,0,.4);align-items:center;justify-content:center}
+#rmDlg .box{background:#fff;border-radius:10px;min-width:320px;max-width:90vw;max-height:80vh;overflow:auto;padding:14px 16px}
+#rmDlg .hd{display:flex;justify-content:space-between;align-items:center;font-weight:bold;font-size:17px;margin-bottom:8px}
+.rmRow{display:flex;gap:12px;align-items:center;padding:8px 0;border-top:1px solid var(--line)}
+.rmRow span{flex:1;color:var(--sub)}
+#rmDlg button{font-family:inherit;font-size:15px;padding:8px 14px;border-radius:6px;border:1px solid var(--navy);background:#fff;color:var(--navy);cursor:pointer}
 #ghost{display:none;position:fixed;z-index:20;pointer-events:none;background:#1a73e8;color:#fff;font-weight:bold;font-size:16px;padding:8px 14px;border-radius:8px;box-shadow:0 6px 16px rgba(0,0,0,.3)}
 .stamp{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:4px;background:var(--ok);color:#fff;font-size:12px;text-decoration:none}
 @media print{
   @page{size:A3 landscape;margin:8mm}
-  body{background:#fff} header{position:static} header button,.help,#ghost,.nojs{display:none!important}
+  body{background:#fff} header{position:static} header button,.help,#ghost,.nojs,#trash,#rmDlg{display:none!important}
   .wrap{border:none;overflow:visible;margin:0}
   table.lt{font-size:11px}
   *{-webkit-print-color-adjust:exact;print-color-adjust:exact}
@@ -656,17 +667,20 @@ function fieldApp(){
   const get = (k, def) => { try{ return JSON.parse(localStorage.getItem(k)) || def; }catch(e){ return def; } };
   const put = (k, v) => { try{ localStorage.setItem(k, JSON.stringify(v)); }catch(e){ alert("この端末では記録を保存できません（プライベートモードなど）。画面を閉じると消えます"); } };
   const doneKey  = () => "limitDone:" + D.id + ":" + today();   // 済み：日付が変わると、新しい日の記録になる
-  const orderKey = "limitOrder:" + D.id;                         // 並び順：変えた並びを次の日も使う
+  const orderKey = "limitOrder:" + D.id;                         // 並び順・外した品番：次の日も使う
 
   /* ---------- 並び（エリア → 時刻 → 品番の順） ---------- */
   const items = {}; D.layout.forEach(a => a.cols.forEach(col => col.forEach(it => items[it.key] = it)));
   const keys = Object.keys(items);
   const original = () => D.layout.map(a => a.cols.map(col => col.map(it => it.key)));
+  let removed = [];   // ゴミ箱に入れた（外した）品番
   function loadOrder(){
     const saved = get(orderKey, null), base = original();
-    if(!saved || saved.length !== base.length) return base;
-    const used = new Set();
-    const ord = saved.map(cols => (cols||[]).map(list => (list||[]).filter(k => items[k] && !used.has(k) && used.add(k))));
+    const so = saved ? (Array.isArray(saved) ? saved : saved.order) : null;   // 前の形（並びだけ）の記録も読める
+    removed = (saved && !Array.isArray(saved) && saved.removed || []).filter(k => items[k]);
+    const used = new Set(removed);
+    const ord = (so && so.length === base.length ? so : base.map(() => []))
+      .map(cols => (cols||[]).map(list => (list||[]).filter(k => items[k] && !used.has(k) && used.add(k))));
     // 保存した並びにない品番（表を作り直して増えたものなど）は元の場所の最後へ
     base.forEach((cols,ai) => cols.forEach((list,ti) => list.forEach(k => {
       if(used.has(k)) return;
@@ -677,6 +691,8 @@ function fieldApp(){
   }
   let order = loadOrder();
   let done = get(doneKey(), {});
+  const saveOrder = () => put(orderKey, { order: order, removed: removed });
+  const active = () => keys.filter(k => removed.indexOf(k) < 0);   // 表に出ている品番
 
   /* ---------- 作業エリアの行を作る ---------- */
   const bodyRows = [...document.querySelectorAll("tr[data-body]")];
@@ -686,13 +702,18 @@ function fieldApp(){
   let rowsNow = [];
   const limOf = {};   // 今の並びでのリミット時刻（別の時刻の列へ動かしたら、その列の時刻になる）
   const totalCells = (() => { const tr=[...document.querySelectorAll("tr")].find(t=>t.querySelector("td.total")); return tr ? [...tr.querySelectorAll("td.total")].slice(1) : []; })();
+  const noteCell = document.querySelector("td.note"), noteText = noteCell ? noteCell.textContent : "";
   function build(){
     rowsNow.forEach(tr => tr.remove()); rowsNow = [];
+    Object.keys(limOf).forEach(k => delete limOf[k]);
     order.forEach(cols => cols.forEach((list,ti) => (list||[]).forEach(k => limOf[k] = D.times[ti])));
-    // 時刻別 合計（必要時間・品番数）も今の並びで数え直す
+    // 時刻別 合計（必要時間・品番数）も今の並びで数え直す（外した品番は数えない）
     D.times.forEach((m,ti) => { if(!totalCells[ti]) return;
-      const ks = keys.filter(k=>limOf[k]===m), h = ks.reduce((s,k)=>s+items[k].h,0);
+      const ks = active().filter(k=>limOf[k]===m), h = ks.reduce((s,k)=>s+items[k].h,0);
       totalCells[ti].textContent = "計 " + (Math.round(h*10)/10).toFixed(1) + "h（" + ks.length + "品番）"; });
+    // 下の注記「必要工数 ○h ÷ ○h ＝ 必要人員 ○人」も、外した品番を除いて数え直す
+    if(noteCell){ const H = active().reduce((s,k)=>s+items[k].h,0);
+      noteCell.textContent = noteText.replace(/必要工数 [\d.]+h ÷ ([\d.]+)h ＝ 必要人員 \d+人/, (m0,wh) => "必要工数 " + H.toFixed(1) + "h ÷ " + wh + "h ＝ 必要人員 " + Math.ceil(H/(+wh) - 1e-9) + "人"); }
     D.layout.forEach((a, ai) => {
       const cols = order[ai] || [];
       const n = Math.max(1, ...D.times.map((m,ti) => (cols[ti]||[]).length));
@@ -731,15 +752,18 @@ function fieldApp(){
         if(isDone){ const s=document.createElement("span"); s.className="stamp"; s.textContent="済 "+done[k]; td.appendChild(s); }
       }
     });
-    const n = keys.filter(k=>done[k]).length, all = keys.length, pct = all ? Math.round(n/all*100) : 0;
+    const ak = active();
+    const n = ak.filter(k=>done[k]).length, all = ak.length, pct = all ? Math.round(n/all*100) : 0;
     document.getElementById("progTxt").textContent = `済み ${n} ／ ${all} 品番（${pct}%）` + (n===all && all ? "　全部完了！" : "");
     document.getElementById("progBar").style.width = pct + "%";
     document.getElementById("chips").innerHTML = D.times.map(m => {
-      const ks = keys.filter(k=>limOf[k]===m), d = ks.filter(k=>done[k]).length;
+      const ks = ak.filter(k=>limOf[k]===m), d = ks.filter(k=>done[k]).length;
       if(!ks.length) return "";
       const cls = d===ks.length ? "all" : (nowM > m ? "late" : "");
       return `<span class="chip ${cls}">${fmt(m)}　${d}/${ks.length}${d===ks.length?" ✓":(nowM>m?" 遅れ":"")}</span>`;
     }).join("");
+    const rb = document.getElementById("btnRemoved");
+    rb.style.display = removed.length ? "" : "none"; rb.textContent = "外した品番（" + removed.length + "）";
   }
 
   /* ---------- タップ：済み／取り消し ---------- */
@@ -782,6 +806,17 @@ function fieldApp(){
     if(!drag){ if(Math.hypot(p.clientX-press.x, p.clientY-press.y) > 10){ clearTimeout(press.timer); press = null; } return; }  // 長押しの前に指が動いたらスクロール
     e.preventDefault();
     moveGhost(p.clientX, p.clientY);
+    // ゴミ箱の上 → 外す
+    ghost.style.display = "none";
+    const over = document.elementFromPoint(p.clientX, p.clientY);
+    ghost.style.display = "block";
+    const trash = document.getElementById("trash");
+    if(over && over.closest && over.closest("#trash")){
+      trash.classList.add("over"); ghost.classList.add("del");
+      document.querySelectorAll(".ins-before,.ins-after").forEach(td => td.classList.remove("ins-before","ins-after"));
+      drag.target = { trash: true }; return;
+    }
+    trash.classList.remove("over"); ghost.classList.remove("del");
     // 画面の端に来たら自動でスクロール
     if(p.clientY < 80) window.scrollBy(0, -12); else if(p.clientY > innerHeight-60) window.scrollBy(0, 12);
     const wrap = document.querySelector(".wrap"), wr = wrap.getBoundingClientRect();
@@ -811,8 +846,14 @@ function fieldApp(){
     press = null;
     if(!drag) return;
     const d = drag; drag = null; justDragged = true; setTimeout(() => justDragged = false, 400);
-    ghost.style.display = "none"; document.body.classList.remove("drag-on"); clearMarks();
+    ghost.style.display = "none"; ghost.classList.remove("del"); document.getElementById("trash").classList.remove("over");
+    document.body.classList.remove("drag-on"); clearMarks();
     if(!d.target) return;
+    if(d.target.trash){
+      if(!confirm(`「${items[d.k].part}」をリミット表から外しますか？\n（生産がないとき用。上の「外した品番」からいつでも戻せます）`)) return;
+      order.forEach(cols => cols.forEach(l => { const j = (l||[]).indexOf(d.k); if(j>=0) l.splice(j,1); }));
+      removed.push(d.k); saveOrder(); build(); return;
+    }
     // 元の場所から抜いて、新しい場所に入れる（別の時刻の列へ入れたら、その時刻がリミットになる）
     let from = null;
     order.forEach((cols,ai) => cols.forEach((l,ti) => { const j = (l||[]).indexOf(d.k); if(j>=0) from = {ai, ti, j}; }));
@@ -823,7 +864,7 @@ function fieldApp(){
     if(from.ai === ai && from.ti === ti && from.j < pos) pos--;
     order[from.ai][from.ti].splice(from.j, 1);
     dest.splice(pos, 0, d.k);
-    put(orderKey, order); build();
+    saveOrder(); build();
   }
   table.addEventListener("touchstart", start, {passive:true});
   table.addEventListener("mousedown", start);
@@ -841,8 +882,27 @@ function fieldApp(){
     done = {}; put(doneKey(), done); render();
   });
   document.getElementById("btnOrder").addEventListener("click", () => {
-    if(!confirm("並び順を、リミット表を作ったときの元の並びに戻しますか？")) return;
-    order = original(); try{ localStorage.removeItem(orderKey); }catch(e){} build();
+    if(!confirm("並び順と外した品番を、リミット表を作ったときの元の状態に戻しますか？")) return;
+    order = original(); removed = []; try{ localStorage.removeItem(orderKey); }catch(e){} build();
+  });
+  // 外した品番の一覧 → 「戻す」で元のエリア・時刻の最後に戻す
+  const dlg = document.getElementById("rmDlg");
+  function showRemoved(){
+    if(!removed.length){ dlg.style.display = "none"; return; }
+    document.getElementById("rmList").innerHTML = removed.map((k,i) => {
+      const it = items[k], a = D.layout.find(x => x.cols.some(c => c.some(y => y.key===k)));
+      return `<div class="rmRow"><b>${esc(it.part)}</b><span>${esc(a ? a.area : "")}　${fmt(it.lim)}</span><button data-i="${i}">戻す</button></div>`;
+    }).join("");
+    dlg.style.display = "flex";
+  }
+  document.getElementById("btnRemoved").addEventListener("click", showRemoved);
+  document.getElementById("rmClose").addEventListener("click", () => dlg.style.display = "none");
+  document.getElementById("rmList").addEventListener("click", e => {
+    const b = e.target.closest("button[data-i]"); if(!b) return;
+    const k = removed[+b.dataset.i]; removed.splice(+b.dataset.i, 1);
+    const base = original();
+    base.forEach((cols,ai) => cols.forEach((l,ti) => { if(l.indexOf(k) >= 0){ if(!order[ai]) order[ai] = []; if(!order[ai][ti]) order[ai][ti] = []; order[ai][ti].push(k); } }));
+    saveOrder(); build(); showRemoved();
   });
   window.addEventListener("storage", () => { done = get(doneKey(), {}); order = loadOrder(); build(); });
   build(); setInterval(render, 30000);
@@ -864,14 +924,17 @@ function exportHtml(){
   <div class="prog"><div class="txt" id="progTxt"></div><div class="bar"><div id="progBar"></div></div></div>
   <div><div id="date" style="font-size:12px;opacity:.85"></div><div class="clock" id="clock"></div></div>
   <button id="btnReset">今日の済みをリセット</button>
+  <button id="btnRemoved" style="display:none">外した品番</button>
   <button id="btnOrder">並び順を元に戻す</button>
   <button onclick="window.print()">印刷</button>
 </header>
 <div class="chips" id="chips"></div>
 <div id="nojs" class="nojs">■ このページのしくみが動いていません（済み・並べ替えができません）。<br>ファイルのプレビューではなく、<b>Chrome で開いて</b>ください。Chrome で開いてもこの表示が出るときは、Chrome を最新にしてください。<span id="nojsMsg"></span></div>
 <div class="help">作業が終わったら<b>品番をタップ</b>すると「済」が付きます（もう一度タップで取り消し）。赤＝リミット時刻を過ぎて未完了。<br>
-順番を変えるときは<b>品番を長押し</b>して、入れたい所まで動かして指を離します（前後・別のエリア・別の時刻の列へ。青い線の所に入ります。別の時刻の列に入れると、その時刻がリミットになります）。記録はこの端末に残ります。</div>
+順番を変えるときは<b>品番を長押し</b>して、入れたい所まで動かして指を離します（前後・別のエリア・別の時刻の列へ。青い線の所に入ります。別の時刻の列に入れると、その時刻がリミットになります）。生産がない品番は、長押しして下の<b>ゴミ箱</b>まで持っていくと外せます（「外した品番」から戻せます）。記録はこの端末に残ります。</div>
 <div id="ghost"></div>
+<div id="trash">🗑<span>ここで離すと外す（生産がないとき）</span></div>
+<div id="rmDlg"><div class="box"><div class="hd">外した品番　<button id="rmClose">閉じる</button></div><div id="rmList"></div></div></div>
 <div class="wrap"><table class="lt">${tableHtml(M, true)}</table></div>
 <script type="application/json" id="limit-data">${data}<\/script>
 <script>
