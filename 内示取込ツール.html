@@ -684,6 +684,30 @@ function exTotalCols(sh, docMonth){
   }
   return out;
 }
+/* (F) 出荷実績表型（トヨタ紡織広瀬 出荷表など）：日付ごとの出荷箱数と「納入数」（月の合計）。
+   内示ではなく実績なので、日当り ＝ 納入数 ÷ 出荷日数（どれか1品番でも出荷した日の数）を出し、
+   管理シートの各月 ＝ 日当り × その月の稼働日（端数は切り上げ）。3か月とも同じ日当りで計算する */
+function exJisseki(sh){
+  let hr=null, qc=null;
+  for(let r=1;r<=Math.min(sh.maxR,15) && !hr;r++) for(let c=1;c<=sh.maxC;c++){ if(norm(cellText(sh,r,c))==="納入数"){ hr=r; qc=c; break; } }
+  if(!hr) return null;
+  const dayCols=[]; let M=null;
+  for(let c=1;c<qc;c++){ const v=cellText(sh,hr,c); if(typeof v==="number" && v>30000 && v<80000){ dayCols.push(c); M ||= new Date(Date.UTC(1899,11,30)+v*864e5).getUTCMonth()+1; } }
+  if(dayCols.length<20) return null;
+  let partCol=null;
+  for(let r=Math.max(1,hr-2);r<=hr && !partCol;r++) for(let c=1;c<dayCols[0];c++){ if(norm(cellText(sh,r,c))==="品番"){ partCol=c; break; } }
+  if(!partCol) return null;
+  const rows=[];
+  for(let r=hr+1;r<=sh.maxR;r++){ const p=cellText(sh,r,partCol); if(isPartLike(p)) rows.push(r); }
+  if(!rows.length) return null;
+  const shipDays = dayCols.filter(c=>rows.some(r=>(num(cellText(sh,r,c))||0)>0)).length;
+  if(!shipDays) return null;
+  return rows.map(r=>{
+    const q = num(cellText(sh,r,qc)) || 0;
+    return { part:String(cellText(sh,r,partCol)).trim(), vals:{}, known:true, where:`${sh.name}!${idxToCol(partCol)}${r}`,
+             rate: q/shipDays, rateInfo:{ month:M, qty:q, shipDays } };
+  });
+}
 function exHeader(sh, docMonth){
   for(let hr=1; hr<=Math.min(sh.maxR,40); hr++){
     const row = sh.grid[hr]||{};
@@ -879,6 +903,13 @@ async function addFiles(files){
   recompute();
 }
 function extractSheets(d, sheets){
+  // 出荷実績表があれば、そのシートだけ使う（同じブックの古いシートなどは読まない）
+  for(const sh of sheets){
+    const r = exJisseki(sh); if(!r) continue;
+    const i = r[0].rateInfo;
+    d.records=r; d.rate=i; d.month=i.month; d.method="出荷実績（納入数÷出荷日数×稼働日）";
+    return;
+  }
   d.month = docMonthFromSheets(sheets, d.name);
   let recs=[], methods=new Set();
   for(const sh of sheets){
@@ -894,10 +925,12 @@ function extractSheets(d, sheets){
 }
 function setMonthDefault(){
   const cnt={};
-  S.docs.forEach(d=>{ const ms = d.records.filter(r=>r.known && r.ms).map(r=>+r.ms[0]).filter(n=>n>=1&&n<=12);
+  S.docs.forEach(d=>{ if(d.rate) return;   // 出荷実績は前月のデータなので、当月の決め手にしない
+    const ms = d.records.filter(r=>r.known && r.ms).map(r=>+r.ms[0]).filter(n=>n>=1&&n<=12);
     const m = ms.length ? mode(ms) : d.month; if(m) cnt[m]=(cnt[m]||0)+1; });
   let best = Object.keys(cnt).sort((a,b)=>cnt[b]-cnt[a])[0];
   if(!best && S.tpl && S.tpl.prevMonths[0]) best = mAdd(S.tpl.prevMonths[0],1);
+  const rd = S.docs.find(d=>d.rate); if(!best && rd) best = mAdd(rd.rate.month,1);
   if(best){ S.month=+best; $("month").value=S.month; updateMonthLabels(); }
 }
 function mode(a){ const c={}; a.forEach(x=>c[x]=(c[x]||0)+1); return +Object.keys(c).sort((x,y)=>c[y]-c[x])[0]; }
@@ -915,6 +948,7 @@ function recompute(){
   // 文書ごとの月チェック
   S.docs.forEach(d=>{
     if(d.kind==="管理シート" || !d.records.length) return;
+    if(d.rate){ d.level="ok"; d.bad=false; d.msg=`${d.rate.month}月の出荷実績（出荷日数 ${d.rate.shipDays}日）から、日当り×各月の稼働日で計算（端数切り上げ）`; return; }
     const known = d.records.filter(r=>r.known && r.ms);
     const first = known.length ? mode(known.map(r=>+r.ms[0])) : null;
     if(known.length && first!==M){ d.level="ng"; d.msg=`このファイルの当月は ${first}月 です。選んだ当月（${M}月）と違うため使いません → 最新の内示か確認してください`; d.bad=true; }
@@ -931,7 +965,9 @@ function recompute(){
       let sc=0; keys.forEach((k,i)=>{ const s=partMatch(k,rec.part); if(s) sc=Math.max(sc, s + (i===0&&al?1:0)); });
       if(!sc) return;
       const base = d.userMonth || M;
-      const v = T.map(m=> rec.known ? rec.vals[m] : rec.vals["#"+((m-base+12)%12)]);
+      const days = dayVals();
+      const v = rec.rate!=null ? T.map((m,k)=> days[k] ? Math.ceil(rec.rate*days[k] - 1e-9) : null)
+                               : T.map(m=> rec.known ? rec.vals[m] : rec.vals["#"+((m-base+12)%12)]);
       if(v.every(x=>x==null)) return;
       const e = T.map(m=> !!(rec.known && rec.empty && rec.empty.includes(m)));
       cands.push({ sc, v, e, doc:d, rec, known:rec.known });
@@ -1159,7 +1195,7 @@ async function addLogSheet(zip, wb, log, T, days){
   ["dragleave","drop"].forEach(ev=>document.addEventListener(ev,e=>{ e.preventDefault(); if(ev==="drop"||e.target===drop) drop.classList.remove("over"); }));
   document.addEventListener("drop",e=>{ if(e.dataTransfer.files.length) addFiles([...e.dataTransfer.files]); });
   $("month").addEventListener("change",()=>{ S.month=+$("month").value; S.rows.forEach(r=>r.cells=[]); updateMonthLabels(); recompute(); });
-  [0,1,2].forEach(k=>$("d"+k).addEventListener("input",()=>{ updateMonthLabels(); renderTable(); renderKpi(); updateOut(); }));
+  [0,1,2].forEach(k=>$("d"+k).addEventListener("input",()=>{ updateMonthLabels(); if(S.docs.some(d=>d.rate)) recompute(); else { renderTable(); renderKpi(); updateOut(); } }));
   $("ack").addEventListener("change",updateOut);
   $("btnOut").addEventListener("click",exportXlsx);
   $("filters").addEventListener("click",e=>{ const f=e.target.dataset.f; if(!f) return; S.filter=f; [...$("filters").querySelectorAll("button[data-f]")].forEach(b=>b.classList.toggle("on",b.dataset.f===f)); renderTable(); });
