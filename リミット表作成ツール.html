@@ -611,7 +611,8 @@ header button{font-family:inherit;font-size:14px;padding:8px 12px;border-radius:
 .chip.all{background:var(--okbg);border-color:var(--ok);color:var(--ok)}
 .chip.late{background:var(--ngbg);border-color:var(--ng);color:var(--ng)}
 .help{padding:0 16px 8px;color:var(--sub);font-size:13px}
-.wrap{overflow:auto;margin:0 16px 16px;border:1px solid var(--line);border-radius:8px;background:#fff}
+.nojs{margin:10px 16px;padding:12px 14px;border:2px solid var(--ng);background:var(--ngbg);color:var(--ng);font-weight:bold;border-radius:8px}
+.wrap{overflow:auto;-webkit-overflow-scrolling:touch;touch-action:pan-x pan-y;margin:0 16px 16px;border:1px solid var(--line);border-radius:8px;background:#fff}
 table.lt{border-collapse:collapse;font-size:14px;white-space:nowrap}
 table.lt td{border:1px solid #9aa5b5;padding:6px 8px;text-align:center;vertical-align:middle;min-width:44px}
 table.lt td.title{font-size:22px;font-weight:bold;border:none;text-align:left}
@@ -639,7 +640,7 @@ body.drag-on{user-select:none;-webkit-user-select:none}
 .stamp{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:4px;background:var(--ok);color:#fff;font-size:12px;text-decoration:none}
 @media print{
   @page{size:A3 landscape;margin:8mm}
-  body{background:#fff} header{position:static} header button,.help,#ghost{display:none}
+  body{background:#fff} header{position:static} header button,.help,#ghost,.nojs{display:none!important}
   .wrap{border:none;overflow:visible;margin:0}
   table.lt{font-size:11px}
   *{-webkit-print-color-adjust:exact;print-color-adjust:exact}
@@ -648,7 +649,7 @@ body.drag-on{user-select:none;-webkit-user-select:none}
 /* 現場用HTMLの中で動くプログラム（この関数の中身がそのままファイルに入る） */
 function fieldApp(){
   const D = JSON.parse(document.getElementById("limit-data").textContent);
-  const pad = n => String(n).padStart(2,"0");
+  const pad = n => (n<10 ? "0" : "") + n;   // 古いタブレットのブラウザでも動く書き方にしている
   const esc = s => String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
   const today = () => { const d=new Date(); return d.getFullYear()+"-"+pad(d.getMonth()+1)+"-"+pad(d.getDate()); };
   const fmt = m => Math.floor(m/60) + ":" + pad(m%60);
@@ -667,7 +668,11 @@ function fieldApp(){
     const used = new Set();
     const ord = saved.map(cols => (cols||[]).map(list => (list||[]).filter(k => items[k] && !used.has(k) && used.add(k))));
     // 保存した並びにない品番（表を作り直して増えたものなど）は元の場所の最後へ
-    base.forEach((cols,ai) => cols.forEach((list,ti) => list.forEach(k => { if(!used.has(k)){ ((ord[ai] ||= [])[ti] ||= []).push(k); used.add(k); } })));
+    base.forEach((cols,ai) => cols.forEach((list,ti) => list.forEach(k => {
+      if(used.has(k)) return;
+      if(!ord[ai]) ord[ai] = []; if(!ord[ai][ti]) ord[ai][ti] = [];
+      ord[ai][ti].push(k); used.add(k);
+    })));
     return ord;
   }
   let order = loadOrder();
@@ -812,7 +817,8 @@ function fieldApp(){
     let from = null;
     order.forEach((cols,ai) => cols.forEach((l,ti) => { const j = (l||[]).indexOf(d.k); if(j>=0) from = {ai, ti, j}; }));
     const {ai, ti} = d.target;
-    const dest = ((order[ai] ||= [])[ti] ||= []);
+    if(!order[ai]) order[ai] = []; if(!order[ai][ti]) order[ai][ti] = [];
+    const dest = order[ai][ti];
     let pos = d.target.pos;
     if(from.ai === ai && from.ti === ti && from.j < pos) pos--;
     order[from.ai][from.ti].splice(from.j, 1);
@@ -862,12 +868,17 @@ function exportHtml(){
   <button onclick="window.print()">印刷</button>
 </header>
 <div class="chips" id="chips"></div>
+<div id="nojs" class="nojs">■ このページのしくみが動いていません（済み・並べ替えができません）。<br>ファイルのプレビューではなく、<b>Chrome で開いて</b>ください。Chrome で開いてもこの表示が出るときは、Chrome を最新にしてください。<span id="nojsMsg"></span></div>
 <div class="help">作業が終わったら<b>品番をタップ</b>すると「済」が付きます（もう一度タップで取り消し）。赤＝リミット時刻を過ぎて未完了。<br>
 順番を変えるときは<b>品番を長押し</b>して、入れたい所まで動かして指を離します（前後・別のエリア・別の時刻の列へ。青い線の所に入ります。別の時刻の列に入れると、その時刻がリミットになります）。記録はこの端末に残ります。</div>
 <div id="ghost"></div>
 <div class="wrap"><table class="lt">${tableHtml(M, true)}</table></div>
 <script type="application/json" id="limit-data">${data}<\/script>
-<script>(${fieldApp.toString()})();<\/script>
+<script>
+window.onerror = function(m){ var e=document.getElementById("nojsMsg"); if(e) e.textContent = "（エラー：" + m + "）"; var b=document.getElementById("nojs"); if(b) b.style.display="block"; };
+(${fieldApp.toString()})();
+document.getElementById("nojs").style.display = "none";
+<\/script>
 </body></html>`;
   const blob = new Blob([page], {type:"text/html"});
   const a = document.createElement("a"); a.href = URL.createObjectURL(blob);
