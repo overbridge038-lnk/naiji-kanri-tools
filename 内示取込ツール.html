@@ -97,8 +97,8 @@
   <div class="card">
     <div id="drop">
       <div class="big">ここに「管理シート」と「各メーカーの内示データ」をまとめてドロップ</div>
-      <div class="small">Excel（.xlsx/.xlsm）・CSV・PDF に対応／何回に分けて追加してもOK ※ネット接続不要・データは外部に送信されません</div>
-      <input type="file" id="file" multiple accept=".xlsx,.xlsm,.csv,.CSV,.pdf,.PDF" class="hidden">
+      <div class="small">Excel（.xlsx/.xlsm/.xls）・CSV・PDF に対応／何回に分けて追加してもOK ※ネット接続不要・データは外部に送信されません</div>
+      <input type="file" id="file" multiple accept=".xlsx,.xlsm,.xls,.csv,.CSV,.pdf,.PDF" class="hidden">
     </div>
   </div>
 
@@ -339,6 +339,127 @@ async function readXlsx(buf){
     sheets.push({ name:s.getAttribute("name"), path, grid, maxR, maxC });
   }
   return { zip, sheets };
+}
+
+/* 古いExcel（.xls：Excel 97〜2003 / 95）を読む。readXlsx と同じ形（sheets の grid）で返す */
+function readXls(buf){
+  const u8 = new Uint8Array(buf), dv = new DataView(buf);
+  const u16 = p => dv.getUint16(p,true), u32 = p => dv.getUint32(p,true);
+  if(u32(0)!==0xE011CFD0 || u32(4)!==0xE11AB1A1) throw new Error(".xls の形式ではありません");
+  /* --- 入れ物（複合ドキュメント）から Workbook を取り出す --- */
+  const ss = 1 << u16(30), mss = 1 << u16(32), cutoff = u32(56), END = 0xFFFFFFFA;
+  const secOff = s => 512 + s*ss;
+  const difat = [];
+  for(let i=0;i<109;i++){ const s=u32(76+i*4); if(s<END) difat.push(s); }
+  for(let s=u32(68), n=u32(72); n>0 && s<END; n--){
+    for(let i=0;i<ss/4-1;i++){ const x=u32(secOff(s)+i*4); if(x<END) difat.push(x); }
+    s = u32(secOff(s)+ss-4);
+  }
+  const fat = [];
+  for(const s of difat) for(let i=0;i<ss/4;i++) fat.push(u32(secOff(s)+i*4));
+  const chain = (start, tbl) => { const out=[]; for(let s=start; s<END && out.length<=tbl.length; s=tbl[s]) out.push(s); return out; };
+  const readBig = start => {
+    const ch=chain(start,fat), out=new Uint8Array(ch.length*ss);
+    ch.forEach((s,i)=>out.set(u8.subarray(secOff(s),secOff(s)+ss),i*ss)); return out;
+  };
+  const dir = readBig(u32(48)), entries = [];
+  for(let p=0; p+128<=dir.length; p+=128){
+    const d = new DataView(dir.buffer, p, 128), nl = d.getUint16(64,true);
+    let name=""; for(let i=0;i+2<nl && i<64;i+=2) name += String.fromCharCode(d.getUint16(i,true));
+    entries.push({ name, type:dir[p+66], start:d.getUint32(116,true), size:d.getUint32(120,true) });
+  }
+  const ent = entries.find(e=>e.type===2 && /^(Workbook|Book)$/i.test(e.name));
+  if(!ent) throw new Error("Excelのデータが見つかりません（.xls ではない可能性があります）");
+  let wb;
+  if(ent.size < cutoff){
+    const mini = readBig(entries[0].start), mf = readBig(u32(60)), mfd = new DataView(mf.buffer), mfat = [];
+    for(let i=0;i+4<=mf.length;i+=4) mfat.push(mfd.getUint32(i,true));
+    const ch = chain(ent.start, mfat); wb = new Uint8Array(ch.length*mss);
+    ch.forEach((s,i)=>wb.set(mini.subarray(s*mss,(s+1)*mss),i*mss));
+  }else wb = readBig(ent.start);
+  wb = wb.subarray(0, Math.min(ent.size, wb.length));
+  const W = new DataView(wb.buffer, wb.byteOffset, wb.byteLength);
+  const w16 = p => W.getUint16(p,true), w32 = p => W.getUint32(p,true);
+
+  /* --- レコードに分ける --- */
+  const recs = [];
+  for(let p=0; p+4<=wb.length; ){ const l=w16(p+2); recs.push({ t:w16(p), p:p+4, len:l }); p+=4+l; }
+  let biff8 = true, ansi = new TextDecoder("shift_jis");
+  const ansiStr = (p,n) => ansi.decode(wb.subarray(p,p+n));
+  /* 文字列（CONTINUE レコードをまたいでもよい）を読む読み手。i はレコード番号、p は読み始め位置 */
+  function reader(i, p){
+    const segs=[recs[i]]; for(let j=i+1;j<recs.length && recs[j].t===0x3C;j++) segs.push(recs[j]);
+    let si=0;
+    const end = () => si<segs.length ? segs[si].p+segs[si].len : wb.length;
+    const next = () => { si++; p = si<segs.length ? segs[si].p : wb.length; };
+    const r = {
+      done: () => si>=segs.length || (si===segs.length-1 && p>=end()),
+      byte(){ if(p>=end()) next(); return p<wb.length ? wb[p++] : 0; },
+      u16(){ return r.byte() | r.byte()<<8; },
+      u32(){ return (r.u16() | r.u16()<<16)>>>0; },
+      skip(n){ while(n>0 && si<segs.length){ if(p>=end()){ next(); continue; } const k=Math.min(n,end()-p); p+=k; n-=k; } },
+      str(cch){ // 文字数 cch の次（flags）から読む
+        if(!biff8){ let s=[]; for(let k=0;k<cch;k++) s.push(r.byte()); return ansi.decode(new Uint8Array(s)); }
+        let fl=r.byte(), runs=0, ext=0, s="";
+        if(fl&8) runs=r.u16(); if(fl&4) ext=r.u32();
+        while(cch>0 && si<segs.length){
+          if(p>=end()){ next(); if(si>=segs.length) break; fl=wb[p++]; continue; }
+          const wide=fl&1, n=Math.min(cch, wide ? (end()-p)>>1 : end()-p);
+          if(n<=0){ p=end(); continue; }
+          if(wide) for(let k=0;k<n;k++){ s+=String.fromCharCode(wb[p]|wb[p+1]<<8); p+=2; }
+          else for(let k=0;k<n;k++) s+=String.fromCharCode(wb[p++]);
+          cch-=n;
+        }
+        r.skip(runs*4+ext);
+        return s;
+      }
+    };
+    return r;
+  }
+  const strAt = (i, p, wide) => { const r=reader(i,p); return r.str(wide ? r.u16() : r.byte()); };
+
+  /* --- ブック全体の情報（シート名・共有文字列） --- */
+  const sst = [], sheetPos = [];
+  for(let i=0;i<recs.length;i++){
+    const { t, p } = recs[i];
+    if(t===0x0809 && i===0) biff8 = w16(p)===0x0600;
+    else if(t===0x0042){ const cp=w16(p); if(cp===65001) ansi=new TextDecoder("utf-8"); else if(cp===1252||cp===0x8000) ansi=new TextDecoder("windows-1252"); }
+    else if(t===0x0085){ if(wb[p+5]===0) sheetPos.push({ pos:w32(p), hidden:wb[p+4], name: biff8 ? strAt(i,p+6,false) : ansiStr(p+7, wb[p+6]) }); }
+    else if(t===0x00FC){ const r=reader(i,p+8), n=w32(p+4); for(let k=0;k<n && !r.done();k++) sst.push(r.str(r.u16())); }
+    else if(t===0x000A) break;
+  }
+
+  /* --- 各シートのセル --- */
+  const rk = v => { let x; if(v&2) x=v>>2; else { const b=new DataView(new ArrayBuffer(8)); b.setUint32(4, v&0xFFFFFFFC, true); x=b.getFloat64(0,true); } return v&1 ? x/100 : x; };
+  const sheets = [];
+  for(const sp of sheetPos){
+    let i = recs.findIndex(r=>r.p-4===sp.pos); if(i<0) continue;
+    const grid = {}; let maxR=0, maxC=0, pend=null;
+    const put = (row, col, v) => {
+      if(v==null || v==="") return; row++; col++;
+      (grid[row] ||= {})[col] = { v, f:"" };
+      if(row>maxR) maxR=row; if(col>maxC) maxC=col;
+    };
+    for(i++; i<recs.length; i++){
+      const { t, p, len } = recs[i];
+      if(t===0x000A) break;
+      const row=w16(p), col=w16(p+2);
+      if(t===0x00FD) put(row,col,sst[w32(p+6)]);                                   // LABELSST
+      else if(t===0x0203) put(row,col,W.getFloat64(p+6,true));                     // NUMBER
+      else if(t===0x027E) put(row,col,rk(w32(p+6)));                               // RK
+      else if(t===0x00BD){ const last=w16(p+len-2); for(let c=col,q=p+4;c<=last;c++,q+=6) put(row,c,rk(w32(q+2))); } // MULRK
+      else if(t===0x0204 || t===0x00D6) put(row,col, biff8 ? strAt(i,p+6,true) : ansiStr(p+8,w16(p+6)));  // LABEL
+      else if(t===0x0205){ if(!wb[p+7]) put(row,col,!!wb[p+6]); }                  // BOOLERR
+      else if(t===0x0006){                                                         // FORMULA（計算結果だけ使う）
+        if(w16(p+12)!==0xFFFF) put(row,col,W.getFloat64(p+6,true));
+        else if(wb[p+6]===0) pend={row,col};
+        else if(wb[p+6]===1) put(row,col,!!wb[p+8]);
+      }
+      else if(t===0x0207 && pend){ put(pend.row,pend.col, biff8 ? strAt(i,p,true) : ansiStr(p+2,w16(p))); pend=null; } // STRING
+    }
+    sheets.push({ name:sp.name, grid, maxR, maxC });
+  }
+  return { sheets };
 }
 
 function decodeText(buf){
@@ -634,7 +755,13 @@ async function addFiles(files){
     S.docs.push(d); renderDocs();
     try{
       const buf = await f.arrayBuffer();
-      if(/\.(xlsx|xlsm)$/i.test(f.name)){
+      const isZip = new Uint8Array(buf,0,Math.min(2,buf.byteLength)).join()==="80,75";  // 中身が .xlsx 形式か
+      if(/\.xls$/i.test(f.name) && !isZip){
+        d.kind="Excel(.xls)";
+        const x = readXls(buf);
+        if(findTemplate(x.sheets)){ d.level="ng"; d.msg="管理シートは .xls では出力できません → Excelで開いて「名前を付けて保存」から .xlsx 形式で保存し直してください"; continue; }
+        extractSheets(d, x.sheets);
+      }else if(/\.(xlsx|xlsm|xls)$/i.test(f.name)){
         d.kind="Excel";
         const x = await readXlsx(buf);
         const tpl = findTemplate(x.sheets);
@@ -657,7 +784,7 @@ async function addFiles(files){
           if(recs){ d.records=recs; d.method="PDF 見出し位置読み"; }
           else { d.level="warn"; d.msg="PDFから月別の数量表を見つけられませんでした（日別計画のみ等）→ 手入力してください"; }
         }
-      }else{ d.level="ng"; d.msg="対応していない形式です（.xlsx / .csv / .pdf）"; }
+      }else{ d.level="ng"; d.msg="対応していない形式です（.xlsx / .xls / .csv / .pdf）"; }
     }catch(e){ console.error(e); d.level="ng"; d.msg="読めませんでした："+e.message; }
     if(d.level==="info" && d.records.length) d.msg="";
     const km = d.records.filter(r=>r.known && r.ms).map(r=>+r.ms[0]).filter(n=>n>=1&&n<=12);
@@ -899,7 +1026,7 @@ async function exportXlsx(){
   zip.file("xl/workbook.xml", wb);
   const blob = await zip.generateAsync({type:"blob", compression:"DEFLATE", mimeType:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
   const a=document.createElement("a"); a.href=URL.createObjectURL(blob);
-  a.download = tpl.name.replace(/\.(xlsx|xlsm)$/i,"") + `_${M}月度内示反映.xlsx`;
+  a.download = tpl.name.replace(/\.(xlsx|xlsm|xls)$/i,"") + `_${M}月度内示反映.xlsx`;
   document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href),5000);
 }
 async function addLogSheet(zip, wb, log, T, days){
