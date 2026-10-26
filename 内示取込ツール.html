@@ -597,7 +597,9 @@ function findTemplate(sheets){
       blank=0;
       if(!isPartLike(p) && !/[A-Z0-9]/i.test(nfkc(p))) continue;
       const cells = [0,1,2].map(k=>{ const x=(sh.grid[r]||{})[qtyCol+k]; return { v: x? num(x.v):null, f: x? x.f:"" }; });
-      rows.push({ r, part:String(p).trim(), seb: sebCol ? V(r,sebCol) : null, maker: mkCol? (V(r,mkCol)||""):"", mat: matCol? (V(r,matCol)??""):"", no: V(r,partCol-2), prev: cells });
+      // 背番号の照合用：月産数より左の文字のセル（背番号の列の見出しが何でも見つかるように）
+      const texts = []; for(let c=1;c<qtyCol;c++){ const v=V(r,c); if(typeof v==="string" && v.trim()) texts.push(v); }
+      rows.push({ r, part:String(p).trim(), seb: sebCol ? V(r,sebCol) : null, sebKeys: new Set(texts.map(sebKey).filter(Boolean)), maker: mkCol? (V(r,mkCol)||""):"", mat: matCol? (V(r,matCol)??""):"", no: V(r,partCol-2), prev: cells });
     }
     const prevMonths = [0,1,2].map(k=>okMonth(num(V(monthRow,qtyCol+k))) ?? (dayR?okMonth(num(V(dayR,dayC+1+k))):null));
     const prevDays = dayR ? [0,1,2].map(k=>num(V(dayR+1,dayC+1+k))) : [null,null,null];
@@ -968,7 +970,10 @@ function recompute(){
     let cands=[];
     S.docs.forEach(d=>{ if(d.bad) return; d.records.forEach(rec=>{
       let sc=0;
-      if(rec.seb!=null){ if(sebKey(rec.seb) && sebKey(rec.seb)===sebKey(tr.seb || tr.part)) sc=3; }   // 出荷実績は背番号で照合
+      if(rec.seb!=null){   // 出荷実績は背番号で照合（「背番号」列があればそこ、なければ行の中の文字のセルから探す）
+        const k=sebKey(rec.seb);
+        if(k && (tr.seb!=null ? sebKey(tr.seb)===k : tr.sebKeys.has(k))) sc=3;
+      }
       else keys.forEach((k,i)=>{ const s=partMatch(k,rec.part); if(s) sc=Math.max(sc, s + (i===0&&al?1:0)); });
       if(!sc) return;
       const base = d.userMonth || M;
