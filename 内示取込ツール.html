@@ -968,10 +968,11 @@ function recompute(){
       const days = dayVals();
       const v = rec.rate!=null ? T.map((m,k)=> days[k] ? Math.ceil(rec.rate*days[k] - 1e-9) : null)
                                : T.map(m=> rec.known ? rec.vals[m] : rec.vals["#"+((m-base+12)%12)]);
-      if(v.every(x=>x==null)) return;
+      if(v.every(x=>x==null) && rec.rate==null) return;   // 出荷実績は稼働日が未入力でも候補に残す（内示に切り替わらないように）
       const e = T.map(m=> !!(rec.known && rec.empty && rec.empty.includes(m)));
       cands.push({ sc, v, e, doc:d, rec, known:rec.known });
     }); });
+    if(cands.some(c=>c.rec.rate!=null)) cands = cands.filter(c=>c.rec.rate!=null);   // 出荷実績と内示の両方にある品番は、いつも出荷実績を使う
     const top = Math.max(0,...cands.map(c=>c.sc));
     cands = cands.filter(c=>c.sc===top);
     // 同じ数量の候補はまとめる
