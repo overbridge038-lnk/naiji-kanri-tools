@@ -292,6 +292,7 @@ const nfkc = s => String(s==null?"":s).normalize("NFKC");
 const nk = s => nfkc(s).toUpperCase().replace(/[^0-9A-Z]/g,"");           // 照合キー
 const rawU = s => nfkc(s).toUpperCase().replace(/\s/g,"").replace(/[‐－―ー−]/g,"-");
 const norm = s => nfkc(s).replace(/\s/g,"");
+const sebKey = s => s==null ? "" : nk(nfkc(s).split(/[(（]/)[0]);              // 背番号の照合キー（「0091 (Y3J)」→「0091」）
 const esc = s => String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
 function colToIdx(L){ let n=0; for(const ch of L) n=n*26+(ch.charCodeAt(0)-64); return n; }
 function idxToCol(n){ let s=""; while(n>0){ const m=(n-1)%26; s=String.fromCharCode(65+m)+s; n=Math.floor((n-1)/26);} return s; }
@@ -577,13 +578,14 @@ async function readPdf(buf){
 function findTemplate(sheets){
   for(const sh of sheets){
     const V=(r,c)=>{ const x=(sh.grid[r]||{})[c]; return x?x.v:null; };
-    let hdr=null, partCol=null, qtyCol=null, mkCol=null, matCol=null, dayR=null, dayC=null;
+    let hdr=null, partCol=null, qtyCol=null, mkCol=null, matCol=null, sebCol=null, dayR=null, dayC=null;
     for(let r=1;r<=Math.min(sh.maxR,40);r++) for(let c=1;c<=Math.min(sh.maxC,60);c++){
       const t = norm(V(r,c));
       if(t==="品番" && !partCol){ hdr=r; partCol=c; }
       if(t==="月産数" && !qtyCol){ qtyCol=c; }
       if(t==="メーカー" && !mkCol) mkCol=c;
       if(t==="材料" && !matCol) matCol=c;
+      if(t==="背番号" && !sebCol) sebCol=c;
       if(t==="稼働日数" && !dayR){ dayR=r; dayC=c; }
     }
     if(!hdr || !qtyCol) continue;
@@ -595,7 +597,7 @@ function findTemplate(sheets){
       blank=0;
       if(!isPartLike(p) && !/[A-Z0-9]/i.test(nfkc(p))) continue;
       const cells = [0,1,2].map(k=>{ const x=(sh.grid[r]||{})[qtyCol+k]; return { v: x? num(x.v):null, f: x? x.f:"" }; });
-      rows.push({ r, part:String(p).trim(), maker: mkCol? (V(r,mkCol)||""):"", mat: matCol? (V(r,matCol)??""):"", no: V(r,partCol-2), prev: cells });
+      rows.push({ r, part:String(p).trim(), seb: sebCol ? V(r,sebCol) : null, maker: mkCol? (V(r,mkCol)||""):"", mat: matCol? (V(r,matCol)??""):"", no: V(r,partCol-2), prev: cells });
     }
     const prevMonths = [0,1,2].map(k=>okMonth(num(V(monthRow,qtyCol+k))) ?? (dayR?okMonth(num(V(dayR,dayC+1+k))):null));
     const prevDays = dayR ? [0,1,2].map(k=>num(V(dayR+1,dayC+1+k))) : [null,null,null];
@@ -694,17 +696,20 @@ function exJisseki(sh){
   const dayCols=[]; let M=null;
   for(let c=1;c<qc;c++){ const v=cellText(sh,hr,c); if(typeof v==="number" && v>30000 && v<80000){ dayCols.push(c); M ||= new Date(Date.UTC(1899,11,30)+v*864e5).getUTCMonth()+1; } }
   if(dayCols.length<20) return null;
-  let partCol=null;
-  for(let r=Math.max(1,hr-2);r<=hr && !partCol;r++) for(let c=1;c<dayCols[0];c++){ if(norm(cellText(sh,r,c))==="品番"){ partCol=c; break; } }
-  if(!partCol) return null;
+  let partCol=null, sebCol=null;
+  for(let r=Math.max(1,hr-2);r<=hr;r++) for(let c=1;c<dayCols[0];c++){ const t=norm(cellText(sh,r,c)); if(t==="品番" && !partCol) partCol=c; if(t==="背番号" && !sebCol) sebCol=c; }
+  if(!partCol || !sebCol) return null;
+  // 背番号で照合する（背番号らしい文字＋納入数がある行）
+  const isSeb = v => { if(v==null || /[ぁ-んァ-ン一-龥]/.test(nfkc(v))) return false; const k=sebKey(v); return k.length>=2 && k.length<=8 && /\d/.test(k); };
   const rows=[];
-  for(let r=hr+1;r<=sh.maxR;r++){ const p=cellText(sh,r,partCol); if(isPartLike(p)) rows.push(r); }
+  for(let r=hr+1;r<=sh.maxR;r++){ if(isSeb(cellText(sh,r,sebCol)) && num(cellText(sh,r,qc))!=null) rows.push(r); }
   if(!rows.length) return null;
   const shipDays = dayCols.filter(c=>rows.some(r=>(num(cellText(sh,r,c))||0)>0)).length;
   if(!shipDays) return null;
   return rows.map(r=>{
     const q = num(cellText(sh,r,qc)) || 0;
-    return { part:String(cellText(sh,r,partCol)).trim(), vals:{}, known:true, where:`${sh.name}!${idxToCol(partCol)}${r}`,
+    const p = cellText(sh,r,partCol), sb = String(cellText(sh,r,sebCol)).trim();
+    return { part: isPartLike(p) ? String(p).trim() : sb, seb: sb, vals:{}, known:true, where:`${sh.name}!${idxToCol(sebCol)}${r} 背番号${sb}`,
              rate: q/shipDays, rateInfo:{ month:M, qty:q, shipDays } };
   });
 }
@@ -962,7 +967,9 @@ function recompute(){
     // 候補を集める
     let cands=[];
     S.docs.forEach(d=>{ if(d.bad) return; d.records.forEach(rec=>{
-      let sc=0; keys.forEach((k,i)=>{ const s=partMatch(k,rec.part); if(s) sc=Math.max(sc, s + (i===0&&al?1:0)); });
+      let sc=0;
+      if(rec.seb!=null){ if(sebKey(rec.seb) && sebKey(rec.seb)===sebKey(tr.seb || tr.part)) sc=3; }   // 出荷実績は背番号で照合
+      else keys.forEach((k,i)=>{ const s=partMatch(k,rec.part); if(s) sc=Math.max(sc, s + (i===0&&al?1:0)); });
       if(!sc) return;
       const base = d.userMonth || M;
       const days = dayVals();
