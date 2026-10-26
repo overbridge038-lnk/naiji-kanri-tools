@@ -385,8 +385,13 @@ function buildModel(p){
 
   let r = 5;
   const timeTotal = times.map(()=>({h:0,n:0}));
+  const layout = [];   // 現場用HTMLで並べ替えるための元データ（エリア → 時刻 → 品番の並び）
   for(const a of p.areas){
     const byT = times.map(m => a.items.filter(i=>i.limit===m));
+    layout.push({ area:a.area, cols: byT.map((list,ti)=>list.map((it,k)=>({
+      key: a.area+"|"+times[ti]+"|"+it.part+"|"+k, lim: times[ti], part: it.part, hours: fmtHour(it.hours),
+      hanger: it.hanger==null?"":String(it.hanger).replace(/[　]+/g,""), qty: roundQty(it.qtyRaw),
+      sp: it.split>1 ? " split"+Math.min(it.split,3) : "" }))) });
     const n = Math.max(1, ...byT.map(x=>x.length));
     for(let k=0;k<n;k++){
       const last = k===n-1, bb = last ? " bb" : "";
@@ -423,7 +428,7 @@ function buildModel(p){
   r += 1;
   put(r,1,"(0.0h)・・・0.1ｈ未満　／　黄色：2分割　薄黄：3分割　／　必要工数 "+totalH.toFixed(1)+"h ÷ "+wh+"h ＝ 必要人員 "+Math.ceil(totalH/wh - 1e-9)+"人","note");
   merge(r,1,r,Math.min(nCol,16));
-  return { rows, merges, heights, nCol, nRow:r, times, timeTotal, totalH, wh };
+  return { rows, merges, heights, nCol, nRow:r, times, timeTotal, totalH, wh, layout };
 }
 
 /* ---------- 画面に表を描く ---------- */
@@ -437,7 +442,7 @@ function tableHtml(M, field){
   }
   let h = "";
   for(let r=1;r<=M.nRow;r++){
-    h += "<tr>";
+    h += field && r>=5 && r<=M.nRow-2 ? '<tr data-body="1">' : "<tr>";   // 現場用HTMLでは作業エリアの行を作り直す
     for(let c=1;c<=M.nCol;c++){
       if(covered.has(r+","+c)) continue;
       const cell = (M.rows[r]||[])[c];
@@ -625,10 +630,18 @@ table.lt td.pk{font-weight:bold;font-size:16px;text-decoration:underline dotted 
 table.lt td.late{background:var(--ngbg)!important;color:var(--ng)}
 table.lt td.done{background:#d9d9d9!important;color:#777}
 table.lt td.pk.done{text-decoration:line-through}
+table.lt td.dragging{opacity:.35}
+table.lt td.ins-before{box-shadow:inset 0 4px 0 #1a73e8}
+table.lt td.ins-after{box-shadow:inset 0 -4px 0 #1a73e8}
+table.lt td.no-drop{background:#eee!important}
+table.lt td[data-k]{-webkit-touch-callout:none}
+body.drag-on{user-select:none;-webkit-user-select:none}
+#ghost{display:none;position:fixed;z-index:20;pointer-events:none;background:#1a73e8;color:#fff;font-weight:bold;font-size:16px;padding:8px 14px;border-radius:8px;box-shadow:0 6px 16px rgba(0,0,0,.3)}
+#ghost.ng{background:#888}
 .stamp{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:4px;background:var(--ok);color:#fff;font-size:12px;text-decoration:none}
 @media print{
   @page{size:A3 landscape;margin:8mm}
-  body{background:#fff} header{position:static} header button,.help{display:none}
+  body{background:#fff} header{position:static} header button,.help,#ghost{display:none}
   .wrap{border:none;overflow:visible;margin:0}
   table.lt{font-size:11px}
   *{-webkit-print-color-adjust:exact;print-color-adjust:exact}
@@ -638,54 +651,188 @@ table.lt td.pk.done{text-decoration:line-through}
 function fieldApp(){
   const D = JSON.parse(document.getElementById("limit-data").textContent);
   const pad = n => String(n).padStart(2,"0");
+  const esc = s => String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
   const today = () => { const d=new Date(); return d.getFullYear()+"-"+pad(d.getMonth()+1)+"-"+pad(d.getDate()); };
-  const key = () => "limitDone:" + D.id + ":" + today();   // 日付が変わると、新しい日の記録になる
-  const load = () => { try{ return JSON.parse(localStorage.getItem(key())||"{}"); }catch(e){ return {}; } };
-  const save = o => { try{ localStorage.setItem(key(), JSON.stringify(o)); }catch(e){ alert("この端末では記録を保存できません（プライベートモードなど）。画面を閉じると済みが消えます"); } };
-  let done = load();
-  const cells = [...document.querySelectorAll("td[data-k]")];
-  cells.forEach(td => { if(td.classList.contains("pk")) td.dataset.p = td.textContent; });
-  const keys = [...new Set(cells.map(td=>td.dataset.k))];
-  const limOf = {}; cells.forEach(td => limOf[td.dataset.k] = +td.dataset.lim);
   const fmt = m => Math.floor(m/60) + ":" + pad(m%60);
+  const get = (k, def) => { try{ return JSON.parse(localStorage.getItem(k)) || def; }catch(e){ return def; } };
+  const put = (k, v) => { try{ localStorage.setItem(k, JSON.stringify(v)); }catch(e){ alert("この端末では記録を保存できません（プライベートモードなど）。画面を閉じると消えます"); } };
+  const doneKey  = () => "limitDone:" + D.id + ":" + today();   // 済み：日付が変わると、新しい日の記録になる
+  const orderKey = "limitOrder:" + D.id;                         // 並び順：変えた並びを次の日も使う
 
+  /* ---------- 並び（エリア → 時刻 → 品番の順） ---------- */
+  const items = {}; D.layout.forEach(a => a.cols.forEach(col => col.forEach(it => items[it.key] = it)));
+  const keys = Object.keys(items);
+  const original = () => D.layout.map(a => a.cols.map(col => col.map(it => it.key)));
+  function loadOrder(){
+    const saved = get(orderKey, null), base = original();
+    if(!saved || saved.length !== base.length) return base;
+    const used = new Set();
+    const ord = saved.map(cols => (cols||[]).map(list => (list||[]).filter(k => items[k] && !used.has(k) && used.add(k))));
+    // 保存した並びにない品番（表を作り直して増えたものなど）は元の場所の最後へ
+    base.forEach((cols,ai) => cols.forEach((list,ti) => list.forEach(k => { if(!used.has(k)){ ((ord[ai] ||= [])[ti] ||= []).push(k); used.add(k); } })));
+    return ord;
+  }
+  let order = loadOrder();
+  let done = get(doneKey(), {});
+
+  /* ---------- 作業エリアの行を作る ---------- */
+  const bodyRows = [...document.querySelectorAll("tr[data-body]")];
+  const tbody = bodyRows.length ? bodyRows[0].parentNode : document.querySelector("table.lt");
+  const anchor = bodyRows.length ? bodyRows[bodyRows.length-1].nextElementSibling : null;
+  bodyRows.forEach(tr => tr.remove());
+  let rowsNow = [];
+  function build(){
+    rowsNow.forEach(tr => tr.remove()); rowsNow = [];
+    D.layout.forEach((a, ai) => {
+      const cols = order[ai] || [];
+      const n = Math.max(1, ...D.times.map((m,ti) => (cols[ti]||[]).length));
+      for(let i=0;i<n;i++){
+        const last = i===n-1, bb = last ? " bb" : "";
+        let h = i===0 ? `<td class="area bb" rowspan="${n}">${esc(a.area)}</td>` : "";
+        D.times.forEach((m, ti) => {
+          const k = (cols[ti]||[])[i], it = k && items[k];
+          const at = `data-a="${ai}" data-t="${ti}" data-i="${i}"`;
+          if(it){
+            const kk = `${at} data-k="${esc(k)}"`;
+            h += `<td class="body pk${it.sp}${bb}" ${kk}>${esc(it.part)}</td><td class="body${it.sp}${bb}" ${kk}>${esc(it.hours)}</td>`
+               + `<td class="body${bb}" ${kk}>${esc(it.hanger)}</td><td class="body${bb}" ${kk}>${esc(it.qty)}</td>`;
+          }else{
+            for(let q=0;q<4;q++) h += `<td class="body${bb}" ${at}></td>`;
+          }
+        });
+        const tr = document.createElement("tr"); tr.innerHTML = h;
+        tbody.insertBefore(tr, anchor); rowsNow.push(tr);
+      }
+    });
+    render();
+  }
+
+  /* ---------- 済み・遅れ・進捗の表示 ---------- */
   function render(){
     const now = new Date(), nowM = now.getHours()*60 + now.getMinutes();
     document.getElementById("clock").textContent = now.getHours() + ":" + pad(now.getMinutes());
     document.getElementById("date").textContent = today().replace(/-/g,"/");
-    cells.forEach(td => {
-      const k = td.dataset.k, isDone = !!done[k], late = !isDone && nowM > limOf[k];
+    document.querySelectorAll("td[data-k]").forEach(td => {
+      const k = td.dataset.k, isDone = !!done[k];
       td.classList.toggle("done", isDone);
-      td.classList.toggle("late", late);
+      td.classList.toggle("late", !isDone && nowM > items[k].lim);
       if(td.classList.contains("pk")){
-        td.textContent = td.dataset.p;
+        td.textContent = items[k].part;
         if(isDone){ const s=document.createElement("span"); s.className="stamp"; s.textContent="済 "+done[k]; td.appendChild(s); }
       }
     });
     const n = keys.filter(k=>done[k]).length, all = keys.length, pct = all ? Math.round(n/all*100) : 0;
     document.getElementById("progTxt").textContent = `済み ${n} ／ ${all} 品番（${pct}%）` + (n===all && all ? "　全部完了！" : "");
     document.getElementById("progBar").style.width = pct + "%";
-    const times = [...new Set(keys.map(k=>limOf[k]))].sort((a,b)=>a-b);
-    document.getElementById("chips").innerHTML = times.map(m => {
-      const ks = keys.filter(k=>limOf[k]===m), d = ks.filter(k=>done[k]).length;
+    document.getElementById("chips").innerHTML = D.times.map(m => {
+      const ks = keys.filter(k=>items[k].lim===m), d = ks.filter(k=>done[k]).length;
       const cls = d===ks.length ? "all" : (nowM > m ? "late" : "");
       return `<span class="chip ${cls}">${fmt(m)}　${d}/${ks.length}${d===ks.length?" ✓":(nowM>m?" 遅れ":"")}</span>`;
     }).join("");
   }
-  document.querySelector("table.lt").addEventListener("click", e => {
+
+  /* ---------- タップ：済み／取り消し ---------- */
+  const table = document.querySelector("table.lt");
+  let justDragged = false;
+  table.addEventListener("click", e => {
+    if(justDragged){ justDragged = false; return; }
     const td = e.target.closest("td[data-k]"); if(!td) return;
-    const k = td.dataset.k, part = k.split("|")[2];
-    done = load();
+    const k = td.dataset.k, part = items[k].part;
+    done = get(doneKey(), {});
     if(done[k]){ if(!confirm(`「${part}」の済みを取り消しますか？`)) return; delete done[k]; }
     else { const d=new Date(); done[k] = d.getHours()+":"+pad(d.getMinutes()); }
-    save(done); render();
+    put(doneKey(), done); render();
   });
+
+  /* ---------- 長押し → ドラッグで並べ替え（同じリミット時刻の列の中で、前後・別のエリアへ） ---------- */
+  const ghost = document.getElementById("ghost");
+  let press = null, drag = null;
+  const pt = e => e.touches ? e.touches[0] || e.changedTouches[0] : e;
+  function clearMarks(){ document.querySelectorAll(".ins-before,.ins-after,.dragging,.no-drop").forEach(td => td.classList.remove("ins-before","ins-after","dragging","no-drop")); }
+  function cellsOf(ai, ti, i){ return document.querySelectorAll(`td[data-a="${ai}"][data-t="${ti}"][data-i="${i}"]`); }
+  function start(e){
+    const td = e.target.closest("td[data-k]"); if(!td) return;
+    const p = pt(e);
+    press = { k: td.dataset.k, x: p.clientX, y: p.clientY, timer: setTimeout(() => begin(td), 450) };
+  }
+  function begin(td){
+    const k = press.k;
+    drag = { k, ti: +td.dataset.t, target: null };
+    if(navigator.vibrate) navigator.vibrate(30);
+    cellsOf(td.dataset.a, td.dataset.t, td.dataset.i).forEach(c => c.classList.add("dragging"));
+    ghost.textContent = items[k].part; ghost.style.display = "block";
+    moveGhost(press.x, press.y);
+    document.body.classList.add("drag-on");
+  }
+  function moveGhost(x, y){ ghost.style.left = (x+12)+"px"; ghost.style.top = (y-36)+"px"; }
+  function move(e){
+    if(!press) return;
+    const p = pt(e);
+    if(!drag){ if(Math.hypot(p.clientX-press.x, p.clientY-press.y) > 10){ clearTimeout(press.timer); press = null; } return; }  // 長押しの前に指が動いたらスクロール
+    e.preventDefault();
+    moveGhost(p.clientX, p.clientY);
+    // 画面の端に来たら自動でスクロール
+    if(p.clientY < 80) window.scrollBy(0, -12); else if(p.clientY > innerHeight-60) window.scrollBy(0, 12);
+    const wrap = document.querySelector(".wrap"), wr = wrap.getBoundingClientRect();
+    if(p.clientX < wr.left+40) wrap.scrollLeft -= 12; else if(p.clientX > wr.right-40) wrap.scrollLeft += 12;
+    ghost.style.display = "none";
+    const el = document.elementFromPoint(p.clientX, p.clientY);
+    ghost.style.display = "block";
+    document.querySelectorAll(".ins-before,.ins-after,.no-drop").forEach(td => td.classList.remove("ins-before","ins-after","no-drop"));
+    drag.target = null;
+    const td = el && el.closest("td[data-a]"); if(!td) return;
+    const ai = +td.dataset.a, ti = +td.dataset.t, i = +td.dataset.i;
+    if(ti !== drag.ti){ td.classList.add("no-drop"); ghost.classList.add("ng"); return; }   // リミット時刻はかえない
+    ghost.classList.remove("ng");
+    const list = order[ai][ti] || [];
+    let pos, mark;
+    if(td.dataset.k){
+      const r = td.getBoundingClientRect(), after = p.clientY > r.top + r.height/2;
+      pos = after ? i+1 : i; mark = after ? "ins-after" : "ins-before";
+      cellsOf(ai, ti, i).forEach(c => c.classList.add(mark));
+    }else{
+      pos = list.length;   // 空いている所 → そのエリアの最後
+      if(list.length) cellsOf(ai, ti, list.length-1).forEach(c => c.classList.add("ins-after"));
+      else cellsOf(ai, ti, i).forEach(c => c.classList.add("ins-before"));
+    }
+    drag.target = { ai, ti, pos };
+  }
+  function end(){
+    if(press) clearTimeout(press.timer);
+    press = null;
+    if(!drag) return;
+    const d = drag; drag = null; justDragged = true; setTimeout(() => justDragged = false, 400);
+    ghost.style.display = "none"; ghost.classList.remove("ng"); document.body.classList.remove("drag-on"); clearMarks();
+    if(!d.target) return;
+    // 元の場所から抜いて、新しい場所に入れる
+    let from = null;
+    order.forEach((cols,ai) => { const l = cols[d.ti] || []; const j = l.indexOf(d.k); if(j>=0) from = {ai, j}; });
+    const dest = (order[d.target.ai][d.ti] ||= []);
+    let pos = d.target.pos;
+    if(from.ai === d.target.ai && from.j < pos) pos--;
+    order[from.ai][d.ti].splice(from.j, 1);
+    dest.splice(pos, 0, d.k);
+    put(orderKey, order); build();
+  }
+  table.addEventListener("touchstart", start, {passive:true});
+  table.addEventListener("mousedown", start);
+  document.addEventListener("touchmove", move, {passive:false});
+  document.addEventListener("mousemove", move);
+  document.addEventListener("touchend", end); document.addEventListener("touchcancel", end);
+  document.addEventListener("mouseup", end);
+  table.addEventListener("contextmenu", e => { if(e.target.closest("td[data-k]")) e.preventDefault(); });
+
+  /* ---------- ボタン ---------- */
   document.getElementById("btnReset").addEventListener("click", () => {
     if(!confirm("今日の済みを全部消して、最初からにしますか？")) return;
-    done = {}; save(done); render();
+    done = {}; put(doneKey(), done); render();
   });
-  window.addEventListener("storage", () => { done = load(); render(); });
-  render(); setInterval(render, 30000);
+  document.getElementById("btnOrder").addEventListener("click", () => {
+    if(!confirm("並び順を、リミット表を作ったときの元の並びに戻しますか？")) return;
+    order = original(); try{ localStorage.removeItem(orderKey); }catch(e){} build();
+  });
+  window.addEventListener("storage", () => { done = get(doneKey(), {}); order = loadOrder(); build(); });
+  build(); setInterval(render, 30000);
 }
 
 function exportHtml(){
@@ -694,7 +841,7 @@ function exportHtml(){
   const keys = M.rows.flat().filter(c=>c && c.pk).map(c=>c.key);
   // 同じ表を作り直しても済みの記録が引き継がれるよう、月度・表題・品番の並びから印（id）を作る
   let h = 0; for(const ch of month+"|"+title+"|"+keys.join(",")) h = (h*31 + ch.charCodeAt(0)) >>> 0;
-  const data = JSON.stringify({ id: h.toString(36) }).replace(/</g,"\\u003c");
+  const data = JSON.stringify({ id: h.toString(36), times: M.times, layout: M.layout }).replace(/</g,"\\u003c");
   const page = `<!DOCTYPE html>
 <html lang="ja"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(month)} ${esc(title)} リミット表</title><style>${FIELD_CSS}</style></head>
@@ -704,10 +851,13 @@ function exportHtml(){
   <div class="prog"><div class="txt" id="progTxt"></div><div class="bar"><div id="progBar"></div></div></div>
   <div><div id="date" style="font-size:12px;opacity:.85"></div><div class="clock" id="clock"></div></div>
   <button id="btnReset">今日の済みをリセット</button>
+  <button id="btnOrder">並び順を元に戻す</button>
   <button onclick="window.print()">印刷</button>
 </header>
 <div class="chips" id="chips"></div>
-<div class="help">作業が終わったら<b>品番をタップ</b>すると「済」が付きます（もう一度タップで取り消し）。赤＝リミット時刻を過ぎて未完了。記録はこの端末に日付ごとに残ります。</div>
+<div class="help">作業が終わったら<b>品番をタップ</b>すると「済」が付きます（もう一度タップで取り消し）。赤＝リミット時刻を過ぎて未完了。<br>
+順番を変えるときは<b>品番を長押し</b>して、入れたい所まで動かして指を離します（同じリミット時刻の列の中で、前後・別のエリアへ。青い線の所に入ります）。記録はこの端末に残ります。</div>
+<div id="ghost"></div>
 <div class="wrap"><table class="lt">${tableHtml(M, true)}</table></div>
 <script type="application/json" id="limit-data">${data}<\/script>
 <script>(${fieldApp.toString()})();<\/script>
