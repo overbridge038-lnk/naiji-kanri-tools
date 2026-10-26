@@ -69,6 +69,7 @@
   .cell input.src-blank{border-color:#f2b84b;background:#fffbea}
   .cell input.src-formula{border-color:#cfd4da;background:var(--greybg);color:var(--grey)}
   .cell input.src-prev{border-color:#c7a6e8;background:#f6effd}
+  .cell input.src-empty{border-color:#7cc392;background:var(--okbg)}
   .cell .cap{font-size:10px;color:var(--sub);white-space:nowrap}
   .cell .cap.big{color:var(--warn);font-weight:bold}
   input.alias{width:110px;font-size:12px;padding:3px 5px;border:1px dashed #9aa5b5;border-radius:4px}
@@ -653,6 +654,36 @@ function exTeiBlock(sh){
 /* (C) 見出し型（FTS CSV・テクノエイト・高木製作所・渡辺工業 など）
        見出し行に「品番」と「当月/翌月/翌々月」「内示数」「所要量」「10月」などがある形式 */
 const PART_LABELS = ["品番","社内品番","製番","部番","部品番号","品目コード","客先品番"];
+/* (E) ユニクレア型：見出し行に日付が並び、右端に「当月計」「次月」「次々月」。品番の下の行は品名・SNP
+   当月計→当月、次月→翌月、次々月→翌々月。次月・次々月が空白なら「空欄」として出す（0にしない）。
+   「材料」のシートは使わない（製品シートだけ） */
+function exTotalCols(sh, docMonth){
+  let hr=null, tc=null;
+  for(let r=1;r<=Math.min(sh.maxR,30) && !hr;r++) for(let c=1;c<=sh.maxC;c++){ if(norm(cellText(sh,r,c))==="当月計"){ hr=r; tc=c; break; } }
+  if(!hr) return null;
+  const nx = norm(cellText(sh,hr,tc+1)), nnx = norm(cellText(sh,hr,tc+2));
+  if(nx!=="次月" || nnx!=="次々月") return null;
+  if(/材料/.test(sh.name)) return [];
+  // 当月：見出し行の日付（Excelの日付の数）から。なければ文書の月
+  let M = null;
+  for(let c=1;c<tc && !M;c++){ const v=cellText(sh,hr,c); if(typeof v==="number" && v>30000 && v<80000) M = new Date(Date.UTC(1899,11,30)+v*864e5).getUTCMonth()+1; }
+  M = M || docMonth;
+  if(!M) return null;
+  let partCol=null;
+  for(let c=1;c<tc && !partCol;c++) for(let r=hr+1;r<=Math.min(sh.maxR,hr+6);r++){ if(isPartLike(cellText(sh,r,c))){ partCol=c; break; } }
+  if(!partCol) return null;
+  const out=[];
+  for(let r=hr+1;r<=sh.maxR;r++){
+    const p=cellText(sh,r,partCol);
+    if(!isPartLike(p)) continue;
+    const v=[0,1,2].map(k=>num(cellText(sh,r,tc+k)));
+    if(v.every(x=>x==null)) continue;
+    const rec={ part:String(p).trim(), vals:{}, known:true, where:`${sh.name}!${idxToCol(partCol)}${r}`, empty:[] };
+    v.forEach((x,k)=>{ const m=mAdd(M,k); if(x!=null) addVal(rec,m,x); else if(k>0) rec.empty.push(m); });
+    if(rec.ms) out.push(rec);
+  }
+  return out;
+}
 function exHeader(sh, docMonth){
   for(let hr=1; hr<=Math.min(sh.maxR,40); hr++){
     const row = sh.grid[hr]||{};
@@ -854,6 +885,7 @@ function extractSheets(d, sheets){
     let r;
     if((r=exNaijiBlock(sh,d.month))){ methods.add("内示情報ブロック"); recs=recs.concat(r); continue; }
     if((r=exTeiBlock(sh))){ methods.add("注文書（定）ブロック"); recs=recs.concat(r); continue; }
+    if((r=exTotalCols(sh,d.month))){ if(r.length) methods.add("当月計・次月・次々月"); recs=recs.concat(r); continue; }
     if((r=exHeader(sh,d.month))){ methods.add("見出し（品番・月）"); recs=recs.concat(r); continue; }
     if((r=exPlainList(sh))){ methods.add("一覧（コード・品番・3か月）"); recs=recs.concat(r); continue; }
   }
@@ -901,12 +933,13 @@ function recompute(){
       const base = d.userMonth || M;
       const v = T.map(m=> rec.known ? rec.vals[m] : rec.vals["#"+((m-base+12)%12)]);
       if(v.every(x=>x==null)) return;
-      cands.push({ sc, v, doc:d, rec, known:rec.known });
+      const e = T.map(m=> !!(rec.known && rec.empty && rec.empty.includes(m)));
+      cands.push({ sc, v, e, doc:d, rec, known:rec.known });
     }); });
     const top = Math.max(0,...cands.map(c=>c.sc));
     cands = cands.filter(c=>c.sc===top);
     // 同じ数量の候補はまとめる
-    const uniq=[]; cands.forEach(c=>{ const k=c.v.join("|"); const u=uniq.find(x=>x.key===k); if(u) u.list.push(c); else uniq.push({key:k, v:c.v, list:[c]}); });
+    const uniq=[]; cands.forEach(c=>{ const k=c.v.join("|"); const u=uniq.find(x=>x.key===k); if(u) u.list.push(c); else uniq.push({key:k, v:c.v, e:c.e, list:[c]}); });
     uniq.sort((a,b)=>b.v.reduce((s,x)=>s+(x||0),0)-a.v.reduce((s,x)=>s+(x||0),0));
     const o = old.get(tr.r);
     const row = { r:tr.r, no:tr.no, maker:tr.maker, part:tr.part, mat:tr.mat, prev:tr.prev, prevByMonth, uniq, pick: o && o.pick<uniq.length ? o.pick : 0, picked: !!(o && o.picked && o.uniq.length===uniq.length),
@@ -915,14 +948,19 @@ function recompute(){
     for(let k=0;k<3;k++){
       const oc = o && o.cells[k];
       if(oc && (oc.src==="hand" || oc.src==="prev")){ row.cells[k]=oc; continue; }
-      if(chosen && chosen.v[k]!=null) row.cells[k]={ v:chosen.v[k], src:"auto" };
-      else if(row.isFormula[k]) row.cells[k]={ v:null, src:"formula" };
-      else row.cells[k]={ v:null, src:"blank" };
+      row.cells[k]=autoCell(chosen,k,row.isFormula[k]);
     }
     row.chosen = chosen;
     return row;
   });
   renderAll();
+}
+/* 内示から入るセル。内示で空白と決まっている月（ユニクレアの次月・次々月など）は "empty"＝空欄で出す */
+function autoCell(u,k,isFormula){
+  if(u && u.v[k]!=null) return { v:u.v[k], src:"auto" };
+  if(isFormula) return { v:null, src:"formula" };
+  if(u && u.e && u.e[k]) return { v:null, src:"empty" };
+  return { v:null, src:"blank" };
 }
 function rowStatus(row){
   if(row.cells.some(c=>c.src==="blank")) return "need";
@@ -988,7 +1026,7 @@ function renderTable(){
       let big = false;
       if(c.v!=null && pv>0 && Math.abs(c.v-pv)/pv>=CFG.bigChange){ cap += `（${c.v>pv?"+":""}${Math.round((c.v-pv)/pv*100)}%）`; big=true; }
       if(c.src==="formula") cap = "式：" + esc(row.prev[k].f);
-      const ph = c.src==="formula" ? "（式）" : "要入力";
+      const ph = c.src==="formula" ? "（式）" : c.src==="empty" ? "空欄" : "要入力";
       return `<td><div class="cell"><input type="number" min="0" data-i="${i}" data-k="${k}" class="src-${c.src}" value="${c.v==null?"":c.v}" placeholder="${ph}"><span class="cap${big?" big":""}">${cap}</span></div></td>`;
     }).join("");
     const daily = row.cells.map((c,k)=>{
@@ -1065,6 +1103,7 @@ async function exportXlsx(){
     row.cells.forEach((c,k)=>{
       let v=c.v, src=c.src;
       if(src==="formula") { log.push([row.part,T[k],"",`式のまま（${row.prev[k].f}）`,""]); return; }
+      if(src==="empty"){ const ok=put(qc+k, row.r, null); log.push([row.part,T[k],"",ok?"内示が空白のため空欄":"式セルのため書込みせず",""]); return; }
       if(v==null){ v = 0; src="zero"; }
       const ok = put(qc+k, row.r, v);
       const how = {auto:"内示から自動",hand:"手入力",prev:"前回値を流用",zero:"未入力のため0"}[src]||src;
@@ -1139,7 +1178,7 @@ async function addLogSheet(zip, wb, log, T, days){
       row.cells[k] = v==null ? { v:null, src: row.isFormula[k] ? "formula" : "blank" } : { v, src:"hand" }; setTimeout(renderAll,0); }
     else if(t.dataset.pick!=null){ const row=S.rows[+t.dataset.pick]; row.pick=+t.value; row.picked=true;
       const u=row.uniq[row.pick]; row.chosen=u;
-      row.cells=row.cells.map((c,k)=> (c.src==="hand"||c.src==="prev") ? c : (u.v[k]!=null ? {v:u.v[k],src:"auto"} : (row.isFormula[k]?{v:null,src:"formula"}:{v:null,src:"blank"})));
+      row.cells=row.cells.map((c,k)=> (c.src==="hand"||c.src==="prev") ? c : autoCell(u,k,row.isFormula[k]));
       renderAll(); }
     else if(t.dataset.alias!=null){ const row=S.rows[+t.dataset.alias]; const v=t.value.trim();
       if(v) ALIAS[row.part]=v; else delete ALIAS[row.part]; saveAlias();
