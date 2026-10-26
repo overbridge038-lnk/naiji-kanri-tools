@@ -389,7 +389,7 @@ function buildModel(p){
   for(const a of p.areas){
     const byT = times.map(m => a.items.filter(i=>i.limit===m));
     layout.push({ area:a.area, cols: byT.map((list,ti)=>list.map((it,k)=>({
-      key: a.area+"|"+times[ti]+"|"+it.part+"|"+k, lim: times[ti], part: it.part, hours: fmtHour(it.hours),
+      key: a.area+"|"+times[ti]+"|"+it.part+"|"+k, lim: times[ti], part: it.part, hours: fmtHour(it.hours), h: it.hours||0,
       hanger: it.hanger==null?"":String(it.hanger).replace(/[　]+/g,""), qty: roundQty(it.qtyRaw),
       sp: it.split>1 ? " split"+Math.min(it.split,3) : "" }))) });
     const n = Math.max(1, ...byT.map(x=>x.length));
@@ -633,11 +633,9 @@ table.lt td.pk.done{text-decoration:line-through}
 table.lt td.dragging{opacity:.35}
 table.lt td.ins-before{box-shadow:inset 0 4px 0 #1a73e8}
 table.lt td.ins-after{box-shadow:inset 0 -4px 0 #1a73e8}
-table.lt td.no-drop{background:#eee!important}
 table.lt td[data-k]{-webkit-touch-callout:none;user-select:none;-webkit-user-select:none}
 body.drag-on{user-select:none;-webkit-user-select:none}
 #ghost{display:none;position:fixed;z-index:20;pointer-events:none;background:#1a73e8;color:#fff;font-weight:bold;font-size:16px;padding:8px 14px;border-radius:8px;box-shadow:0 6px 16px rgba(0,0,0,.3)}
-#ghost.ng{background:#888}
 .stamp{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:4px;background:var(--ok);color:#fff;font-size:12px;text-decoration:none}
 @media print{
   @page{size:A3 landscape;margin:8mm}
@@ -681,8 +679,15 @@ function fieldApp(){
   const anchor = bodyRows.length ? bodyRows[bodyRows.length-1].nextElementSibling : null;
   bodyRows.forEach(tr => tr.remove());
   let rowsNow = [];
+  const limOf = {};   // 今の並びでのリミット時刻（別の時刻の列へ動かしたら、その列の時刻になる）
+  const totalCells = (() => { const tr=[...document.querySelectorAll("tr")].find(t=>t.querySelector("td.total")); return tr ? [...tr.querySelectorAll("td.total")].slice(1) : []; })();
   function build(){
     rowsNow.forEach(tr => tr.remove()); rowsNow = [];
+    order.forEach(cols => cols.forEach((list,ti) => (list||[]).forEach(k => limOf[k] = D.times[ti])));
+    // 時刻別 合計（必要時間・品番数）も今の並びで数え直す
+    D.times.forEach((m,ti) => { if(!totalCells[ti]) return;
+      const ks = keys.filter(k=>limOf[k]===m), h = ks.reduce((s,k)=>s+items[k].h,0);
+      totalCells[ti].textContent = "計 " + (Math.round(h*10)/10).toFixed(1) + "h（" + ks.length + "品番）"; });
     D.layout.forEach((a, ai) => {
       const cols = order[ai] || [];
       const n = Math.max(1, ...D.times.map((m,ti) => (cols[ti]||[]).length));
@@ -715,7 +720,7 @@ function fieldApp(){
     document.querySelectorAll("td[data-k]").forEach(td => {
       const k = td.dataset.k, isDone = !!done[k];
       td.classList.toggle("done", isDone);
-      td.classList.toggle("late", !isDone && nowM > items[k].lim);
+      td.classList.toggle("late", !isDone && nowM > limOf[k]);
       if(td.classList.contains("pk")){
         td.textContent = items[k].part;
         if(isDone){ const s=document.createElement("span"); s.className="stamp"; s.textContent="済 "+done[k]; td.appendChild(s); }
@@ -725,7 +730,8 @@ function fieldApp(){
     document.getElementById("progTxt").textContent = `済み ${n} ／ ${all} 品番（${pct}%）` + (n===all && all ? "　全部完了！" : "");
     document.getElementById("progBar").style.width = pct + "%";
     document.getElementById("chips").innerHTML = D.times.map(m => {
-      const ks = keys.filter(k=>items[k].lim===m), d = ks.filter(k=>done[k]).length;
+      const ks = keys.filter(k=>limOf[k]===m), d = ks.filter(k=>done[k]).length;
+      if(!ks.length) return "";
       const cls = d===ks.length ? "all" : (nowM > m ? "late" : "");
       return `<span class="chip ${cls}">${fmt(m)}　${d}/${ks.length}${d===ks.length?" ✓":(nowM>m?" 遅れ":"")}</span>`;
     }).join("");
@@ -744,11 +750,11 @@ function fieldApp(){
     put(doneKey(), done); render();
   });
 
-  /* ---------- 長押し → ドラッグで並べ替え（同じリミット時刻の列の中で、前後・別のエリアへ） ---------- */
+  /* ---------- 長押し → ドラッグで並べ替え（前後・別のエリア・別のリミット時刻の列へ） ---------- */
   const ghost = document.getElementById("ghost");
   let press = null, drag = null;
   const pt = e => e.touches ? e.touches[0] || e.changedTouches[0] : e;
-  function clearMarks(){ document.querySelectorAll(".ins-before,.ins-after,.dragging,.no-drop").forEach(td => td.classList.remove("ins-before","ins-after","dragging","no-drop")); }
+  function clearMarks(){ document.querySelectorAll(".ins-before,.ins-after,.dragging").forEach(td => td.classList.remove("ins-before","ins-after","dragging")); }
   function cellsOf(ai, ti, i){ return document.querySelectorAll(`td[data-a="${ai}"][data-t="${ti}"][data-i="${i}"]`); }
   function start(e){
     const td = e.target.closest("td[data-k]"); if(!td) return;
@@ -757,7 +763,7 @@ function fieldApp(){
   }
   function begin(td){
     const k = press.k;
-    drag = { k, ti: +td.dataset.t, target: null };
+    drag = { k, target: null };
     if(navigator.vibrate) navigator.vibrate(30);
     cellsOf(td.dataset.a, td.dataset.t, td.dataset.i).forEach(c => c.classList.add("dragging"));
     ghost.textContent = items[k].part; ghost.style.display = "block";
@@ -778,13 +784,11 @@ function fieldApp(){
     ghost.style.display = "none";
     const el = document.elementFromPoint(p.clientX, p.clientY);
     ghost.style.display = "block";
-    document.querySelectorAll(".ins-before,.ins-after,.no-drop").forEach(td => td.classList.remove("ins-before","ins-after","no-drop"));
+    document.querySelectorAll(".ins-before,.ins-after").forEach(td => td.classList.remove("ins-before","ins-after"));
     drag.target = null;
     const td = el && el.closest("td[data-a]"); if(!td) return;
     const ai = +td.dataset.a, ti = +td.dataset.t, i = +td.dataset.i;
-    if(ti !== drag.ti){ td.classList.add("no-drop"); ghost.classList.add("ng"); return; }   // リミット時刻はかえない
-    ghost.classList.remove("ng");
-    const list = order[ai][ti] || [];
+    const list = (order[ai] && order[ai][ti]) || [];
     let pos, mark;
     if(td.dataset.k){
       const r = td.getBoundingClientRect(), after = p.clientY > r.top + r.height/2;
@@ -802,15 +806,16 @@ function fieldApp(){
     press = null;
     if(!drag) return;
     const d = drag; drag = null; justDragged = true; setTimeout(() => justDragged = false, 400);
-    ghost.style.display = "none"; ghost.classList.remove("ng"); document.body.classList.remove("drag-on"); clearMarks();
+    ghost.style.display = "none"; document.body.classList.remove("drag-on"); clearMarks();
     if(!d.target) return;
-    // 元の場所から抜いて、新しい場所に入れる
+    // 元の場所から抜いて、新しい場所に入れる（別の時刻の列へ入れたら、その時刻がリミットになる）
     let from = null;
-    order.forEach((cols,ai) => { const l = cols[d.ti] || []; const j = l.indexOf(d.k); if(j>=0) from = {ai, j}; });
-    const dest = (order[d.target.ai][d.ti] ||= []);
+    order.forEach((cols,ai) => cols.forEach((l,ti) => { const j = (l||[]).indexOf(d.k); if(j>=0) from = {ai, ti, j}; }));
+    const {ai, ti} = d.target;
+    const dest = ((order[ai] ||= [])[ti] ||= []);
     let pos = d.target.pos;
-    if(from.ai === d.target.ai && from.j < pos) pos--;
-    order[from.ai][d.ti].splice(from.j, 1);
+    if(from.ai === ai && from.ti === ti && from.j < pos) pos--;
+    order[from.ai][from.ti].splice(from.j, 1);
     dest.splice(pos, 0, d.k);
     put(orderKey, order); build();
   }
@@ -858,7 +863,7 @@ function exportHtml(){
 </header>
 <div class="chips" id="chips"></div>
 <div class="help">作業が終わったら<b>品番をタップ</b>すると「済」が付きます（もう一度タップで取り消し）。赤＝リミット時刻を過ぎて未完了。<br>
-順番を変えるときは<b>品番を長押し</b>して、入れたい所まで動かして指を離します（同じリミット時刻の列の中で、前後・別のエリアへ。青い線の所に入ります）。記録はこの端末に残ります。</div>
+順番を変えるときは<b>品番を長押し</b>して、入れたい所まで動かして指を離します（前後・別のエリア・別の時刻の列へ。青い線の所に入ります。別の時刻の列に入れると、その時刻がリミットになります）。記録はこの端末に残ります。</div>
 <div id="ghost"></div>
 <div class="wrap"><table class="lt">${tableHtml(M, true)}</table></div>
 <script type="application/json" id="limit-data">${data}<\/script>
