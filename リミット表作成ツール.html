@@ -611,6 +611,11 @@ header button{font-family:inherit;font-size:14px;padding:8px 12px;border-radius:
 .chip.all{background:var(--okbg);border-color:var(--ok);color:var(--ok)}
 .chip.late{background:var(--ngbg);border-color:var(--ng);color:var(--ng)}
 .help{padding:0 16px 8px;color:var(--sub);font-size:13px}
+.zoom{display:inline-flex;align-items:center;gap:4px}
+.zoom button{min-width:40px;font-size:18px!important;font-weight:bold;padding:6px 10px!important}
+#zLbl{min-width:48px;text-align:center;font-weight:bold}
+#zbox{overflow:hidden}
+table.lt{transform-origin:0 0;width:-webkit-max-content;width:max-content}   /* 拡大・縮小しても表の幅が変わらないように */
 .nojs{margin:10px 16px;padding:12px 14px;border:2px solid var(--ng);background:var(--ngbg);color:var(--ng);font-weight:bold;border-radius:8px}
 .wrap{overflow:auto;-webkit-overflow-scrolling:touch;touch-action:pan-x pan-y;margin:0 16px 16px;border:1px solid var(--line);border-radius:8px;background:#fff}
 table.lt{border-collapse:collapse;font-size:14px;white-space:nowrap}
@@ -653,6 +658,7 @@ body.drag-on #trash{display:flex}
   @page{size:A3 landscape;margin:8mm}
   body{background:#fff} header{position:static} header button,.help,#ghost,.nojs,#trash,#rmDlg{display:none!important}
   .wrap{border:none;overflow:visible;margin:0}
+  #zbox{width:auto!important;height:auto!important;overflow:visible} table.lt{transform:none!important}
   table.lt{font-size:11px}
   *{-webkit-print-color-adjust:exact;print-color-adjust:exact}
 }`;
@@ -735,7 +741,7 @@ function fieldApp(){
         tbody.insertBefore(tr, anchor); rowsNow.push(tr);
       }
     });
-    render();
+    render(); applyZoom();   // 行の数が変わると表の大きさも変わる
   }
 
   /* ---------- 済み・遅れ・進捗の表示 ---------- */
@@ -786,6 +792,7 @@ function fieldApp(){
   function clearMarks(){ document.querySelectorAll(".ins-before,.ins-after,.dragging").forEach(td => td.classList.remove("ins-before","ins-after","dragging")); }
   function cellsOf(ai, ti, i){ return document.querySelectorAll(`td[data-a="${ai}"][data-t="${ti}"][data-i="${i}"]`); }
   function start(e){
+    if(e.touches && e.touches.length > 1){ if(press) clearTimeout(press.timer); press = null; return; }   // 2本指は拡大・縮小
     const td = e.target.closest("td[data-k]"); if(!td) return;
     const p = pt(e);
     press = { k: td.dataset.k, x: p.clientX, y: p.clientY, timer: setTimeout(() => begin(td), 450) };
@@ -876,6 +883,38 @@ function fieldApp(){
   table.addEventListener("selectstart", e => { if(e.target.closest && e.target.closest("td[data-k]")) e.preventDefault(); });
   table.addEventListener("dragstart", e => e.preventDefault());
 
+  /* ---------- 表の大きさ（縮小・拡大） ---------- */
+  const wrap = document.getElementById("wrap"), zbox = document.getElementById("zbox");
+  const clampZ = z => Math.max(0.3, Math.min(2, z));
+  let zoom = clampZ(+get("limitZoom", 1) || 1);
+  function applyZoom(){
+    table.style.transform = zoom === 1 ? "" : "scale(" + zoom + ")";
+    zbox.style.width = Math.ceil(table.offsetWidth * zoom) + "px";
+    zbox.style.height = Math.ceil(table.offsetHeight * zoom) + "px";
+    document.getElementById("zLbl").textContent = Math.round(zoom*100) + "%";
+  }
+  function setZoom(z, keep){ zoom = clampZ(z); applyZoom(); if(keep !== false) put("limitZoom", zoom); }
+  document.getElementById("zOut").addEventListener("click", () => setZoom(zoom/1.2));
+  document.getElementById("zIn").addEventListener("click", () => setZoom(zoom*1.2));
+  // 全体：表の全部が画面に入る大きさにする（もう一度押すと100%）
+  document.getElementById("zFit").addEventListener("click", () => {
+    const hd = document.querySelector("header").offsetHeight;
+    const w = (wrap.clientWidth - 4) / table.offsetWidth, h = (innerHeight - hd - 16) / table.offsetHeight;
+    const fit = clampZ(Math.min(w, h, 1));
+    setZoom(Math.abs(zoom - fit) < 0.01 ? 1 : fit);
+    window.scrollTo(0, wrap.getBoundingClientRect().top + window.pageYOffset - hd - 8);
+  });
+  // 2本指で広げる・つまむ
+  let pinch = null;
+  const dist = t => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+  wrap.addEventListener("touchstart", e => { if(e.touches.length === 2){ pinch = { d: dist(e.touches), z: zoom }; } }, {passive:true});
+  wrap.addEventListener("touchmove", e => {
+    if(!pinch || e.touches.length !== 2) return;
+    e.preventDefault();
+    setZoom(pinch.z * dist(e.touches) / pinch.d, false);
+  }, {passive:false});
+  wrap.addEventListener("touchend", e => { if(pinch && e.touches.length < 2){ pinch = null; put("limitZoom", zoom); } });
+
   /* ---------- ボタン ---------- */
   document.getElementById("btnReset").addEventListener("click", () => {
     if(!confirm("今日の済みを全部消して、最初からにしますか？")) return;
@@ -905,7 +944,7 @@ function fieldApp(){
     saveOrder(); build(); showRemoved();
   });
   window.addEventListener("storage", () => { done = get(doneKey(), {}); order = loadOrder(); build(); });
-  build(); setInterval(render, 30000);
+  build(); applyZoom(); setInterval(render, 30000);
 }
 
 function exportHtml(){
@@ -924,6 +963,7 @@ function exportHtml(){
   <div class="prog"><div class="txt" id="progTxt"></div><div class="bar"><div id="progBar"></div></div></div>
   <div><div id="date" style="font-size:12px;opacity:.85"></div><div class="clock" id="clock"></div></div>
   <button id="btnReset">今日の済みをリセット</button>
+  <span class="zoom"><button id="zOut">－</button><span id="zLbl">100%</span><button id="zIn">＋</button><button id="zFit">全体</button></span>
   <button id="btnRemoved" style="display:none">外した品番</button>
   <button id="btnOrder">並び順を元に戻す</button>
   <button onclick="window.print()">印刷</button>
@@ -931,11 +971,11 @@ function exportHtml(){
 <div class="chips" id="chips"></div>
 <div id="nojs" class="nojs">■ このページのしくみが動いていません（済み・並べ替えができません）。<br>ファイルのプレビューではなく、<b>Chrome で開いて</b>ください。Chrome で開いてもこの表示が出るときは、Chrome を最新にしてください。<span id="nojsMsg"></span></div>
 <div class="help">作業が終わったら<b>品番をタップ</b>すると「済」が付きます（もう一度タップで取り消し）。赤＝リミット時刻を過ぎて未完了。<br>
-順番を変えるときは<b>品番を長押し</b>して、入れたい所まで動かして指を離します（前後・別のエリア・別の時刻の列へ。青い線の所に入ります。別の時刻の列に入れると、その時刻がリミットになります）。生産がない品番は、長押しして下の<b>ゴミ箱</b>まで持っていくと外せます（「外した品番」から戻せます）。記録はこの端末に残ります。</div>
+順番を変えるときは<b>品番を長押し</b>して、入れたい所まで動かして指を離します（前後・別のエリア・別の時刻の列へ。青い線の所に入ります。別の時刻の列に入れると、その時刻がリミットになります）。生産がない品番は、長押しして下の<b>ゴミ箱</b>まで持っていくと外せます（「外した品番」から戻せます）。表の大きさは上の<b>－／＋／全体</b>か、表を<b>2本指で広げる・つまむ</b>と変えられます。記録はこの端末に残ります。</div>
 <div id="ghost"></div>
 <div id="trash">🗑<span>ここで離すと外す（生産がないとき）</span></div>
 <div id="rmDlg"><div class="box"><div class="hd">外した品番　<button id="rmClose">閉じる</button></div><div id="rmList"></div></div></div>
-<div class="wrap"><table class="lt">${tableHtml(M, true)}</table></div>
+<div class="wrap" id="wrap"><div id="zbox"><table class="lt">${tableHtml(M, true)}</table></div></div>
 <script type="application/json" id="limit-data">${data}<\/script>
 <script>
 window.onerror = function(m){ var e=document.getElementById("nojsMsg"); if(e) e.textContent = "（エラー：" + m + "）"; var b=document.getElementById("nojs"); if(b) b.style.display="block"; };
