@@ -853,7 +853,7 @@ function exPdf(pdf, docMonth){
 
 /* (G) 素材支給計画PDF（ジーテクト「デポ出荷/塗装/受入/支給/溶接計画」など）：
    「部番：51603-60060」ごとに、「素材支給予定日」の行の右端「合計」を読む。
-   合計は数か月分なので、日当り ＝ 合計 ÷ 支給のある日数、各月 ＝ 日当り × その月の稼働日（端数切り上げ） */
+   日当り ＝ 合計 ÷ 当月の稼働日、各月 ＝ 日当り × その月の稼働日（当月＝合計。端数切り上げ） */
 function exSozaiPdf(pdf){
   const out=[];
   pdf.pages.forEach((lines, pi) => {
@@ -873,10 +873,8 @@ function exSozaiPdf(pdf){
       const totalIt = nums.find(it => Math.abs(it.r - sumIt.r) < 40 || Math.abs(it.cx - sumIt.cx) < 40);
       if(!totalIt) return;
       const total = num(totalIt.s);
-      const days = nums.filter(it => it!==totalIt && it.r < sumIt.x - 20 && num(it.s) > 0).length;
-      if(!days) return;
-      out.push({ part:h.part, vals:{}, known:true, where:`p${pi+1} 部番${h.part}（合計${fmt(total)}÷${days}日）`,
-                 rate: total/days, rateInfo:{ qty:total, shipDays:days } });
+      out.push({ part:h.part, vals:{}, known:true, where:`p${pi+1} 部番${h.part}（素材支給予定日 合計${fmt(total)}）`,
+                 rate: total, perD0: true });   // perD0：合計を当月の稼働日で割って日当りにする
     });
   });
   return out.length ? out : null;
@@ -930,7 +928,7 @@ async function addFiles(files){
           const sz = exSozaiPdf(pdf);
           const recs = sz ? null : exPdf(pdf, d.month);
           if(sz){ d.records=sz; d.month=null; d.method="素材支給予定日の合計（日当り×稼働日）";
-                  d.rate={ msg:`素材支給予定日の合計 ÷ 支給のある日数 で日当りを出し、各月の稼働日を掛けて計算（端数切り上げ）` }; }
+                  d.rate={ msg:`素材支給予定日の合計 ÷ 当月の稼働日 で日当りを出し、各月の稼働日を掛けて計算（当月＝合計、端数切り上げ）` }; }
           else if(recs){ d.records=recs; d.method="PDF 見出し位置読み"; }
           else { d.level="warn"; d.msg="PDFから月別の数量表を見つけられませんでした（日別計画のみ等）→ 手入力してください"; }
         }
@@ -1012,7 +1010,8 @@ function recompute(){
       if(!sc) return;
       const base = d.userMonth || M;
       const days = dayVals();
-      const v = rec.rate!=null ? T.map((m,k)=> days[k] ? Math.ceil(rec.rate*days[k] - 1e-9) : null)
+      const r = rec.perD0 ? (days[0] ? rec.rate/days[0] : null) : rec.rate;   // 素材支給計画は「合計÷当月の稼働日」が日当り
+      const v = rec.rate!=null ? T.map((m,k)=> days[k] && r!=null ? Math.ceil(r*days[k] - 1e-9) : null)
                                : T.map(m=> rec.known ? rec.vals[m] : rec.vals["#"+((m-base+12)%12)]);
       if(v.every(x=>x==null) && rec.rate==null) return;   // 出荷実績は稼働日が未入力でも候補に残す（内示に切り替わらないように）
       const e = T.map(m=> !!(rec.known && rec.empty && rec.empty.includes(m)));
