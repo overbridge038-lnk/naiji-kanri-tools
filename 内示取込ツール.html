@@ -851,6 +851,37 @@ function exPdf(pdf, docMonth){
   return out.length ? out : null;
 }
 
+/* (G) 素材支給計画PDF（ジーテクト「デポ出荷/塗装/受入/支給/溶接計画」など）：
+   「部番：51603-60060」ごとに、「素材支給予定日」の行の右端「合計」を読む。
+   合計は数か月分なので、日当り ＝ 合計 ÷ 支給のある日数、各月 ＝ 日当り × その月の稼働日（端数切り上げ） */
+function exSozaiPdf(pdf){
+  const out=[];
+  pdf.pages.forEach((lines, pi) => {
+    const heads = [];
+    lines.forEach(l => l.items.forEach(it => { const m = nfkc(it.s).replace(/\s/g,"").match(/^部番[:：]([0-9A-Z][0-9A-Z-]+)$/i); if(m) heads.push({ y:l.y, part:m[1].toUpperCase() }); }));
+    heads.forEach((h, hi) => {
+      const lowY = hi+1 < heads.length ? heads[hi+1].y : -Infinity;   // 次の部番まで
+      const inBlock = lines.filter(l => l.y < h.y && l.y > lowY);
+      const sumIt = inBlock.flatMap(l => l.items).find(it => norm(it.s)==="合計");
+      const label = inBlock.flatMap(l => l.items.map(it => ({l, it}))).find(x => norm(x.it.s)==="素材支給予定日");
+      if(!sumIt || !label) return;
+      // 「素材支給予定日」の文字のすぐ上の段が数字の行
+      const row = inBlock.filter(l => l.y > label.l.y && l.y - label.l.y <= 16 && l.items.some(it => num(it.s)!=null))
+                         .sort((a,b) => a.y - b.y)[0];
+      if(!row) return;
+      const nums = row.items.filter(it => num(it.s)!=null);
+      const totalIt = nums.find(it => Math.abs(it.r - sumIt.r) < 40 || Math.abs(it.cx - sumIt.cx) < 40);
+      if(!totalIt) return;
+      const total = num(totalIt.s);
+      const days = nums.filter(it => it!==totalIt && it.r < sumIt.x - 20 && num(it.s) > 0).length;
+      if(!days) return;
+      out.push({ part:h.part, vals:{}, known:true, where:`p${pi+1} 部番${h.part}（合計${fmt(total)}÷${days}日）`,
+                 rate: total/days, rateInfo:{ qty:total, shipDays:days } });
+    });
+  });
+  return out.length ? out : null;
+}
+
 /* 文書全体の月（ファイル名・本文から） */
 function docMonthFromSheets(sheets, fname){
   for(const sh of sheets) for(let r=1;r<=Math.min(sh.maxR,12);r++){ const row=sh.grid[r]||{}; for(const c in row){ const v=row[c].v; if(typeof v==="string" && !/作成|発行|日付|Date/i.test(v)){ const m=okMonth(monthOf(v)); if(m) return m; } } }
@@ -896,8 +927,11 @@ async function addFiles(files){
         if(pdf.nItems < 5){ d.level="warn"; d.msg="文字の入っていないPDF（FAX・スキャン）のため読めません → 該当品番は手入力してください"; }
         else{
           d.month = docMonthFromPdf(pdf, f.name);
-          const recs = exPdf(pdf, d.month);
-          if(recs){ d.records=recs; d.method="PDF 見出し位置読み"; }
+          const sz = exSozaiPdf(pdf);
+          const recs = sz ? null : exPdf(pdf, d.month);
+          if(sz){ d.records=sz; d.month=null; d.method="素材支給予定日の合計（日当り×稼働日）";
+                  d.rate={ msg:`素材支給予定日の合計 ÷ 支給のある日数 で日当りを出し、各月の稼働日を掛けて計算（端数切り上げ）` }; }
+          else if(recs){ d.records=recs; d.method="PDF 見出し位置読み"; }
           else { d.level="warn"; d.msg="PDFから月別の数量表を見つけられませんでした（日別計画のみ等）→ 手入力してください"; }
         }
       }else{ d.level="ng"; d.msg="対応していない形式です（.xlsx / .xls / .csv / .pdf）"; }
@@ -937,7 +971,7 @@ function setMonthDefault(){
     const m = ms.length ? mode(ms) : d.month; if(m) cnt[m]=(cnt[m]||0)+1; });
   let best = Object.keys(cnt).sort((a,b)=>cnt[b]-cnt[a])[0];
   if(!best && S.tpl && S.tpl.prevMonths[0]) best = mAdd(S.tpl.prevMonths[0],1);
-  const rd = S.docs.find(d=>d.rate); if(!best && rd) best = mAdd(rd.rate.month,1);
+  const rd = S.docs.find(d=>d.rate && d.rate.month); if(!best && rd) best = mAdd(rd.rate.month,1);
   if(best){ S.month=+best; $("month").value=S.month; updateMonthLabels(); }
 }
 function mode(a){ const c={}; a.forEach(x=>c[x]=(c[x]||0)+1); return +Object.keys(c).sort((x,y)=>c[y]-c[x])[0]; }
@@ -955,7 +989,7 @@ function recompute(){
   // 文書ごとの月チェック
   S.docs.forEach(d=>{
     if(d.kind==="管理シート" || !d.records.length) return;
-    if(d.rate){ d.level="ok"; d.bad=false; d.msg=`${d.rate.month}月の出荷実績（出荷日数 ${d.rate.shipDays}日）から、日当り×各月の稼働日で計算（端数切り上げ）`; return; }
+    if(d.rate){ d.level="ok"; d.bad=false; d.msg= d.rate.msg || `${d.rate.month}月の出荷実績（出荷日数 ${d.rate.shipDays}日）から、日当り×各月の稼働日で計算（端数切り上げ）`; return; }
     const known = d.records.filter(r=>r.known && r.ms);
     const first = known.length ? mode(known.map(r=>+r.ms[0])) : null;
     if(known.length && first!==M){ d.level="ng"; d.msg=`このファイルの当月は ${first}月 です。選んだ当月（${M}月）と違うため使いません → 最新の内示か確認してください`; d.bad=true; }
