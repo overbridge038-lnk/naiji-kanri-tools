@@ -1023,6 +1023,107 @@ function fieldApp(){
     syncBase(); rebuildItems(); saveOrder(); build();
   });
 
+  /* ---------- Excel出力（押したときの画面の表をそのまま .xlsx に） ---------- */
+  // ネットなしで動くよう、Excelファイル（中身はzip）をこのページの中で組み立てる
+  const CRC = (() => { const t = []; for(let n=0;n<256;n++){ let c=n; for(let k=0;k<8;k++) c = c&1 ? 0xEDB88320 ^ (c>>>1) : c>>>1; t[n]=c>>>0; } return t; })();
+  function crc32(u){ let c = 0xFFFFFFFF; for(let i=0;i<u.length;i++) c = CRC[(c ^ u[i]) & 255] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; }
+  function zip(files){   // files: [{name, data(Uint8Array)}]（圧縮なし）
+    const enc = new TextEncoder(), parts = [], cen = []; let off = 0;
+    files.forEach(f => {
+      const nm = enc.encode(f.name), crc = crc32(f.data), h = new DataView(new ArrayBuffer(30));
+      h.setUint32(0,0x04034b50,true); h.setUint16(4,20,true); h.setUint16(6,0x0800,true); h.setUint32(14,crc,true);
+      h.setUint32(18,f.data.length,true); h.setUint32(22,f.data.length,true); h.setUint16(26,nm.length,true);
+      parts.push(new Uint8Array(h.buffer), nm, f.data);
+      const c = new DataView(new ArrayBuffer(46));
+      c.setUint32(0,0x02014b50,true); c.setUint16(4,20,true); c.setUint16(6,20,true); c.setUint16(8,0x0800,true); c.setUint32(16,crc,true);
+      c.setUint32(20,f.data.length,true); c.setUint32(24,f.data.length,true); c.setUint16(28,nm.length,true); c.setUint32(42,off,true);
+      cen.push(new Uint8Array(c.buffer), nm);
+      off += 30 + nm.length + f.data.length;
+    });
+    const csize = cen.reduce((s,a)=>s+a.length,0), e = new DataView(new ArrayBuffer(22));
+    e.setUint32(0,0x06054b50,true); e.setUint16(8,files.length,true); e.setUint16(10,files.length,true); e.setUint32(12,csize,true); e.setUint32(16,off,true);
+    return new Blob(parts.concat(cen, [new Uint8Array(e.buffer)]), {type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
+  }
+  const xesc = v => String(v).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+  const colName = n => { let s = ""; while(n > 0){ const m = (n-1) % 26; s = String.fromCharCode(65+m) + s; n = Math.floor((n-1)/26); } return s; };
+  function exportXlsx(){
+    // 1) 画面の表をマス目に写す（結合も）
+    const grid = [], merges = [], styles = [], styleIdx = {};
+    const styleOf = td => {   // 見た目の種類（色・太さ・罫線）
+      const c = td.classList, has = x => c.contains(x);
+      const fill = has("hdr") ? "FF1F4E78" : has("done") ? "FFD9D9D9" : has("late") ? "FFFCE8E6" : has("hand") ? "FFE8F0FE"
+                 : has("split2") ? "FFFFFF00" : has("split3") ? "FFFFF2CC" : has("split4") ? "FFFCE4D6"
+                 : has("sub") ? "FFD9E1F2" : has("total") ? "FFF2F2F2" : has("area") ? "FFF7F9FC" : "";
+      const color = has("hdr") ? "FFFFFFFF" : has("done") ? "FF777777" : has("late") ? "FFD93025" : has("hand") ? "FF1A4FA0" : "FF000000";
+      const bold = has("hdr") || has("sub") || has("total") || has("area") || has("title") || has("pk");
+      const size = has("title") ? 18 : has("area") ? 14 : 11;
+      const border = has("title") || has("note") || has("blank") ? "none" : has("bb") ? "bb" : "thin";
+      const align = has("note") || has("title") ? "left" : "center";
+      const key = [fill,color,bold,size,border,align].join("|");
+      if(styleIdx[key] == null){ styleIdx[key] = styles.length + 1; styles.push({fill,color,bold,size,border,align}); }
+      return styleIdx[key];
+    };
+    const textOf = td => {
+      const k = td.dataset.k;
+      if(k && td.classList.contains("pk")){ const it = items[k];
+        return it.part + (it.piece ? "（" + it.piece + "）" : "") + (it.hand ? "［手入力］" : "") + (done[k] ? "　済 " + done[k] : ""); }
+      return td.textContent;
+    };
+    const taken = {};
+    [...table.querySelectorAll("tr")].forEach((tr, ri) => {
+      const r = ri + 1; let c = 1;
+      [...tr.children].forEach(td => {
+        while(taken[r + "," + c]) c++;
+        const rs = +td.getAttribute("rowspan") || 1, cs = +td.getAttribute("colspan") || 1;
+        const st = styleOf(td), txt = td.classList.contains("pk");   // 品番は数字だけでも文字のまま（「0091」の0が消えないように）
+        for(let y=r; y<r+rs; y++) for(let x=c; x<c+cs; x++){ taken[y+","+x] = 1; (grid[y] = grid[y] || [])[x] = { v: (y===r && x===c) ? textOf(td) : "", s: st, txt: txt }; }
+        if(rs > 1 || cs > 1) merges.push(colName(c) + r + ":" + colName(c+cs-1) + (r+rs-1));
+        c += cs;
+      });
+    });
+    const nCol = Math.max(...grid.filter(Boolean).map(r => r.length - 1));
+    // 2) シート
+    let rows = "";
+    grid.forEach((row, r) => { if(!row) return;
+      rows += `<row r="${r}">`;
+      row.forEach((cell, c) => { if(!cell) return; const ref = colName(c) + r, v = cell.v;
+        if(v === "") rows += `<c r="${ref}" s="${cell.s}"/>`;
+        else if(!cell.txt && /^(0|[1-9]\d*)$/.test(v)) rows += `<c r="${ref}" s="${cell.s}"><v>${v}</v></c>`;
+        else rows += `<c r="${ref}" s="${cell.s}" t="inlineStr"><is><t xml:space="preserve">${xesc(v)}</t></is></c>`; });
+      rows += `</row>`; });
+    let cols = `<col min="1" max="1" width="24" customWidth="1"/>`;
+    // 品番の列は「済 10:30」「（1/2）」が入るので広め
+    for(let c=2;c<=nCol;c++){ const w = [20,10,14,8][(c-2)%4]; cols += `<col min="${c}" max="${c}" width="${w}" customWidth="1"/>`; }
+    const sheet = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheetPr><pageSetUpPr fitToPage="1"/></sheetPr><cols>${cols}</cols><sheetData>${rows}</sheetData>${merges.length ? `<mergeCells count="${merges.length}">${merges.map(m=>`<mergeCell ref="${m}"/>`).join("")}</mergeCells>` : ""}<pageMargins left="0.3" right="0.3" top="0.3" bottom="0.3" header="0.2" footer="0.2"/><pageSetup paperSize="8" orientation="landscape" fitToWidth="1" fitToHeight="0"/></worksheet>`;
+    // 3) 見た目（スタイル）
+    const fonts = ['<font><sz val="11"/><name val="Yu Gothic UI"/></font>'], fills = ['<fill><patternFill patternType="none"/></fill>','<fill><patternFill patternType="gray125"/></fill>'];
+    const borders = ['<border><left/><right/><top/><bottom/><diagonal/></border>',
+      '<border><left style="thin"><color rgb="FF9AA5B5"/></left><right style="thin"><color rgb="FF9AA5B5"/></right><top style="thin"><color rgb="FF9AA5B5"/></top><bottom style="thin"><color rgb="FF9AA5B5"/></bottom><diagonal/></border>',
+      '<border><left style="thin"><color rgb="FF9AA5B5"/></left><right style="thin"><color rgb="FF9AA5B5"/></right><top style="thin"><color rgb="FF9AA5B5"/></top><bottom style="thick"><color rgb="FF333333"/></bottom><diagonal/></border>'];
+    const xfs = ['<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'];
+    styles.forEach(st => {
+      fonts.push(`<font>${st.bold?"<b/>":""}<sz val="${st.size}"/><color rgb="${st.color}"/><name val="Yu Gothic UI"/></font>`);
+      let fillId = 0; if(st.fill){ fills.push(`<fill><patternFill patternType="solid"><fgColor rgb="${st.fill}"/><bgColor indexed="64"/></patternFill></fill>`); fillId = fills.length - 1; }
+      const borderId = st.border === "none" ? 0 : st.border === "bb" ? 2 : 1;
+      xfs.push(`<xf numFmtId="0" fontId="${fonts.length-1}" fillId="${fillId}" borderId="${borderId}" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="${st.align}" vertical="center"/></xf>`);
+    });
+    const stylesXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="${fonts.length}">${fonts.join("")}</fonts><fills count="${fills.length}">${fills.join("")}</fills><borders count="${borders.length}">${borders.join("")}</borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="${xfs.length}">${xfs.join("")}</cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`;
+    const enc = new TextEncoder(), f = (name, text) => ({ name, data: enc.encode(text) });
+    const blob = zip([
+      f("[Content_Types].xml", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>`),
+      f("_rels/.rels", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`),
+      f("xl/workbook.xml", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="リミット表" sheetId="1" r:id="rId1"/></sheets></workbook>`),
+      f("xl/_rels/workbook.xml.rels", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`),
+      f("xl/styles.xml", stylesXml),
+      f("xl/worksheets/sheet1.xml", sheet)
+    ]);
+    const d = new Date(), stamp = d.getFullYear() + pad(d.getMonth()+1) + pad(d.getDate()) + "_" + pad(d.getHours()) + pad(d.getMinutes());
+    const a = document.createElement("a"); a.href = URL.createObjectURL(blob);
+    a.download = (document.title.replace(/\s+/g,"_") + "_" + stamp + ".xlsx").replace(/[\\/:*?"<>|]/g,"_");
+    document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  }
+  document.getElementById("btnXlsx").addEventListener("click", exportXlsx);
+
   /* ---------- 表の大きさ（縮小・拡大） ---------- */
   const wrap = document.getElementById("wrap"), zbox = document.getElementById("zbox");
   const clampZ = z => Math.max(0.3, Math.min(2, z));
@@ -1106,12 +1207,13 @@ function exportHtml(){
   <span class="zoom"><button id="zOut">－</button><span id="zLbl">100%</span><button id="zIn">＋</button><button id="zFit">全体</button></span>
   <button id="btnRemoved" style="display:none">外した品番</button>
   <button id="btnOrder">並び順を元に戻す</button>
+  <button id="btnXlsx">Excel出力</button>
   <button onclick="window.print()">印刷</button>
 </header>
 <div class="chips" id="chips"></div>
 <div id="nojs" class="nojs">■ このページのしくみが動いていません（済み・並べ替えができません）。<br>ファイルのプレビューではなく、<b>Chrome で開いて</b>ください。Chrome で開いてもこの表示が出るときは、Chrome を最新にしてください。<span id="nojsMsg"></span></div>
 <div class="help">作業が終わったら<b>品番をタップ</b>すると「済」が付きます（もう一度タップで取り消し）。赤＝リミット時刻を過ぎて未完了。<br>
-順番を変えるときは<b>品番を長押し</b>して、入れたい所まで動かして指を離します（前後・別のエリア・別の時刻の列へ。青い線の所に入ります。別の時刻の列に入れると、その時刻がリミットになります）。管理表にない突発の品番は、<b>空いた欄をタップ</b>すると手入力できます（青い色と「手入力」の印。ゴミ箱に入れるまで残ります）。1つの品番を2〜4回に分けるときは、<b>長押しして動かさずに指を離す</b>と分割メニューが出ます（色：2分割＝黄色、3分割＝薄黄、4分割＝薄いオレンジ）。生産がない品番は、長押しして下の<b>ゴミ箱</b>まで持っていくと外せます（「外した品番」から戻せます）。表の大きさは上の<b>－／＋／全体</b>か、表を<b>2本指で広げる・つまむ</b>と変えられます。記録はこの端末に残ります。</div>
+順番を変えるときは<b>品番を長押し</b>して、入れたい所まで動かして指を離します（前後・別のエリア・別の時刻の列へ。青い線の所に入ります。別の時刻の列に入れると、その時刻がリミットになります）。管理表にない突発の品番は、<b>空いた欄をタップ</b>すると手入力できます（青い色と「手入力」の印。ゴミ箱に入れるまで残ります）。1つの品番を2〜4回に分けるときは、<b>長押しして動かさずに指を離す</b>と分割メニューが出ます（色：2分割＝黄色、3分割＝薄黄、4分割＝薄いオレンジ）。生産がない品番は、長押しして下の<b>ゴミ箱</b>まで持っていくと外せます（「外した品番」から戻せます）。いつでも上の<b>Excel出力</b>で、そのときの表（並び・分割・手入力・済み）を Excel で保存できます。表の大きさは上の<b>－／＋／全体</b>か、表を<b>2本指で広げる・つまむ</b>と変えられます。記録はこの端末に残ります。</div>
 <div id="ghost"></div>
 <div id="trash">🗑<span>ここで離すと外す（生産がないとき）</span></div>
 <div id="addDlg"><div class="box"><div class="hd"><span id="fTitle"></span></div>
