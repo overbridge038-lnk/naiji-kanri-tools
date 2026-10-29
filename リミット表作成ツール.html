@@ -646,9 +646,9 @@ body.drag-on{user-select:none;-webkit-user-select:none}
 body.drag-on #trash{display:flex}
 #trash.over{background:var(--ng);color:#fff;border-style:solid;transform:translateX(-50%) scale(1.12)}
 #ghost.del{background:var(--ng)}
-#spDlg,#rmDlg{display:none;position:fixed;top:0;left:0;right:0;bottom:0;z-index:30;background:rgba(0,0,0,.4);align-items:center;justify-content:center}
-#spDlg .box,#rmDlg .box{background:#fff;border-radius:10px;min-width:320px;max-width:90vw;max-height:80vh;overflow:auto;padding:14px 16px}
-#spDlg .hd,#rmDlg .hd{display:flex;justify-content:space-between;align-items:center;font-weight:bold;font-size:17px;margin-bottom:8px}
+#addDlg,#spDlg,#rmDlg{display:none;position:fixed;top:0;left:0;right:0;bottom:0;z-index:30;background:rgba(0,0,0,.4);align-items:center;justify-content:center}
+#addDlg .box,#spDlg .box,#rmDlg .box{background:#fff;border-radius:10px;min-width:320px;max-width:90vw;max-height:80vh;overflow:auto;padding:14px 16px}
+#addDlg .hd,#spDlg .hd,#rmDlg .hd{display:flex;justify-content:space-between;align-items:center;font-weight:bold;font-size:17px;margin-bottom:8px}
 .rmRow{display:flex;gap:12px;align-items:center;padding:8px 0;border-top:1px solid var(--line)}
 .rmRow span{flex:1;color:var(--sub)}
 .spBtns{display:flex;gap:10px;flex-wrap:wrap;margin:6px 0}
@@ -656,12 +656,21 @@ body.drag-on #trash{display:flex}
 .spNote{color:var(--sub);font-size:13px;margin-top:6px;max-width:420px}
 .pc{display:inline-block;margin-left:5px;padding:0 5px;border-radius:4px;background:var(--navy);color:#fff;font-size:12px;text-decoration:none}
 table.lt td.split4{background:#FCE4D6}
-#spDlg button,#rmDlg button{font-family:inherit;font-size:15px;padding:8px 14px;border-radius:6px;border:1px solid var(--navy);background:#fff;color:var(--navy);cursor:pointer}
+.fl{display:flex;flex-direction:column;gap:3px;font-size:13px;color:var(--sub);margin:8px 0}
+.fl input{font-family:inherit;font-size:20px;padding:8px 10px;border:2px solid var(--line);border-radius:6px;min-width:280px}
+.fMsg{color:var(--ng);font-weight:bold;min-height:20px}
+.fBtns{display:flex;gap:10px;justify-content:flex-end;margin-top:6px}
+.fBtns button{font-size:17px!important;padding:10px 20px!important}
+.fBtns button.ok{background:var(--navy)!important;color:#fff!important}
+table.lt td.hand{background:#e8f0fe;color:#1a4fa0}
+.hb{display:inline-block;margin-left:5px;padding:0 5px;border-radius:4px;background:#1a73e8;color:#fff;font-size:11px;text-decoration:none}
+table.lt td.body:not([data-k]){cursor:pointer}
+#addDlg button,#spDlg button,#rmDlg button{font-family:inherit;font-size:15px;padding:8px 14px;border-radius:6px;border:1px solid var(--navy);background:#fff;color:var(--navy);cursor:pointer}
 #ghost{display:none;position:fixed;z-index:20;pointer-events:none;background:#1a73e8;color:#fff;font-weight:bold;font-size:16px;padding:8px 14px;border-radius:8px;box-shadow:0 6px 16px rgba(0,0,0,.3)}
 .stamp{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:4px;background:var(--ok);color:#fff;font-size:12px;text-decoration:none}
 @media print{
   @page{size:A3 landscape;margin:8mm}
-  body{background:#fff} header{position:static} header button,.help,#ghost,.nojs,#trash,#rmDlg,#spDlg{display:none!important}
+  body{background:#fff} header{position:static} header button,.help,#ghost,.nojs,#trash,#rmDlg,#spDlg,#addDlg{display:none!important}
   .wrap{border:none;overflow:visible;margin:0}
   #zbox{width:auto!important;height:auto!important;overflow:visible} table.lt{transform:none!important}
   table.lt{font-size:11px}
@@ -681,8 +690,21 @@ function fieldApp(){
   const orderKey = "limitOrder:" + D.id;                         // 並び順・外した品番：次の日も使う
 
   /* ---------- 並び（エリア → 時刻 → 品番の順） ---------- */
-  const baseItems = {}; D.layout.forEach(a => a.cols.forEach(col => col.forEach(it => baseItems[it.key] = it)));
-  const original = () => D.layout.map(a => a.cols.map(col => col.map(it => it.key)));
+  const layoutItems = {}; D.layout.forEach(a => a.cols.forEach(col => col.forEach(it => layoutItems[it.key] = it)));
+  let added = {};     // 突発で手入力した品番：キー → {part, h, hanger, qty, ai, ti}（ゴミ箱に入れるまで残る）
+  let baseItems = {};
+  function handItem(k){
+    const a = added[k], h = +a.h || 0;
+    return { key: k, lim: D.times[a.ti], part: a.part, h: h, hours: "(" + h.toFixed(1) + "h)", hanger: a.hanger || "",
+             qty: a.qty === "" || a.qty == null ? "" : +a.qty, sp: "", hand: true };
+  }
+  function syncBase(){ baseItems = Object.assign({}, layoutItems); Object.keys(added).forEach(k => baseItems[k] = handItem(k)); }
+  // 元の並び（手入力した品番は、入れたエリア・時刻の最後）
+  const original = () => {
+    const o = D.layout.map(a => a.cols.map(col => col.map(it => it.key)));
+    Object.keys(added).forEach(k => { const a = added[k]; if(o[a.ai] && o[a.ai][a.ti]) o[a.ai][a.ti].push(k); });
+    return o;
+  };
   let removed = [];   // ゴミ箱に入れた（外した）品番
   let splits = {};    // 分割した品番：元の品番 → 分割数（2〜4）
   let items = {}, keys = [];   // keys：表に並べる単位（分割した品番は「1/2」「2/2」…の札）
@@ -691,7 +713,7 @@ function fieldApp(){
     const h = it.h > 0 ? Math.max(0.1, Math.ceil(it.h / n * 10 - 1e-9) / 10) : 0;
     return { key: it.key + "#" + i + "/" + n, base: it.key, piece: i + "/" + n, lim: it.lim, part: it.part,
              h: h, hours: "(" + h.toFixed(1) + "h)", hanger: it.hanger,
-             qty: typeof it.qty === "number" ? Math.ceil(it.qty / n - 1e-9) : it.qty, sp: " split" + n };
+             qty: typeof it.qty === "number" ? Math.ceil(it.qty / n - 1e-9) : it.qty, sp: " split" + n, hand: it.hand };
   }
   const unitsOf = k => splits[k] ? Array.from({length: splits[k]}, (x,i) => baseItems[k].key + "#" + (i+1) + "/" + splits[k]) : [k];
   function rebuildItems(){
@@ -708,6 +730,9 @@ function fieldApp(){
     const saved = get(orderKey, null), base = original();
     const old = !saved || Array.isArray(saved);   // 前の形（並びだけ）の記録も読める
     const so = saved ? (old ? saved : saved.order) : null;
+    added = {}; const ad = !old && saved.added || {};
+    Object.keys(ad).forEach(k => { const a = ad[k]; if(a && a.part && D.layout[a.ai] && a.ti >= 0 && a.ti < D.times.length) added[k] = a; });
+    syncBase();
     splits = {}; const sp = !old && saved.splits || {};
     Object.keys(sp).forEach(k => { if(baseItems[k] && sp[k] >= 2 && sp[k] <= 4) splits[k] = sp[k]; });
     rebuildItems();
@@ -726,7 +751,7 @@ function fieldApp(){
   }
   let order = loadOrder();
   let done = get(doneKey(), {});
-  const saveOrder = () => put(orderKey, { order: order, removed: removed, splits: splits });
+  const saveOrder = () => put(orderKey, { order: order, removed: removed, splits: splits, added: added });
   const active = () => keys.filter(k => removed.indexOf(k) < 0);   // 表に出ている品番
 
   /* ---------- 作業エリアの行を作る ---------- */
@@ -759,9 +784,9 @@ function fieldApp(){
           const k = (cols[ti]||[])[i], it = k && items[k];
           const at = `data-a="${ai}" data-t="${ti}" data-i="${i}"`;
           if(it){
-            const kk = `${at} data-k="${esc(k)}"`;
-            h += `<td class="body pk${it.sp}${bb}" ${kk}>${esc(it.part)}</td><td class="body${it.sp}${bb}" ${kk}>${esc(it.hours)}</td>`
-               + `<td class="body${bb}" ${kk}>${esc(it.hanger)}</td><td class="body${bb}" ${kk}>${esc(it.qty)}</td>`;
+            const kk = `${at} data-k="${esc(k)}"`, hd = it.hand ? " hand" : "";   // 手入力した品番は青
+            h += `<td class="body pk${it.sp}${hd}${bb}" ${kk}>${esc(it.part)}</td><td class="body${it.sp}${hd}${bb}" ${kk}>${esc(it.hours)}</td>`
+               + `<td class="body${hd}${bb}" ${kk}>${esc(it.hanger)}</td><td class="body${hd}${bb}" ${kk}>${esc(it.qty)}</td>`;
           }else{
             for(let q=0;q<4;q++) h += `<td class="body${bb}" ${at}></td>`;
           }
@@ -785,6 +810,7 @@ function fieldApp(){
       if(td.classList.contains("pk")){
         td.textContent = items[k].part;
         if(items[k].piece){ const s=document.createElement("span"); s.className="pc"; s.textContent=items[k].piece; td.appendChild(s); }
+        if(items[k].hand){ const s=document.createElement("span"); s.className="hb"; s.textContent="手入力"; td.appendChild(s); }
         if(isDone){ const s=document.createElement("span"); s.className="stamp"; s.textContent="済 "+done[k]; td.appendChild(s); }
       }
     });
@@ -807,7 +833,8 @@ function fieldApp(){
   let justDragged = false;
   table.addEventListener("click", e => {
     if(justDragged){ justDragged = false; return; }
-    const td = e.target.closest("td[data-k]"); if(!td) return;
+    const td = e.target.closest("td[data-k]");
+    if(!td){ const em = e.target.closest("td[data-a]"); if(em) openForm({ ai: +em.dataset.a, ti: +em.dataset.t }); return; }   // 空いた欄 → 手入力
     const k = td.dataset.k, part = label(k);
     done = get(doneKey(), {});
     if(done[k]){ if(!confirm(`「${part}」の済みを取り消しますか？`)) return; delete done[k]; }
@@ -879,15 +906,21 @@ function fieldApp(){
     }
     drag.target = { ai, ti, pos };
   }
-  function end(){
+  function end(e){
     if(press) clearTimeout(press.timer);
     press = null;
     if(!drag) return;
+    if(e && e.type === "touchend" && e.cancelable) e.preventDefault();   // 指を離したときの「クリック」が、開いたメニューのボタンを押さないように
     const d = drag; drag = null; justDragged = true; setTimeout(() => justDragged = false, 400);
     ghost.style.display = "none"; ghost.classList.remove("del"); document.getElementById("trash").classList.remove("over");
     document.body.classList.remove("drag-on"); clearMarks();
     if(!d.moved){ openSplit(d.k); return; }   // 長押しして動かさずに離した → 分割メニュー
     if(!d.target) return;
+    if(d.target.trash && added[d.k]){
+      if(!confirm(`手入力した「${label(d.k)}」を削除しますか？\n（削除すると元に戻せません）`)) return;
+      order.forEach(cols => cols.forEach(l => { const j = (l||[]).indexOf(d.k); if(j>=0) l.splice(j,1); }));
+      delete added[d.k]; syncBase(); rebuildItems(); saveOrder(); build(); return;
+    }
     if(d.target.trash){
       if(!confirm(`「${label(d.k)}」をリミット表から外しますか？\n（生産がないとき用。上の「外した品番」からいつでも戻せます）`)) return;
       order.forEach(cols => cols.forEach(l => { const j = (l||[]).indexOf(d.k); if(j>=0) l.splice(j,1); }));
@@ -917,17 +950,20 @@ function fieldApp(){
 
   /* ---------- 分割（1つの品番の生産を2〜4回に分ける） ---------- */
   const spDlg = document.getElementById("spDlg");
+  let openedAt = 0;   // メニューを開いた直後のボタン押しは受けつけない（長押しの指を離したときの押しまちがい防止）
+  const tooSoon = () => performance.now() - openedAt < 400;
   function where(k){ let w = null; order.forEach((cols,ai) => cols.forEach((l,ti) => { const j = (l||[]).indexOf(k); if(j >= 0) w = {ai, ti, j}; })); return w; }
   function openSplit(k){
     const it = items[k];
     document.getElementById("spTitle").textContent = label(k);
     document.getElementById("spBtns").innerHTML = it.piece
       ? `<button data-un="${esc(k)}">分割をやめる（元の1つに戻す）</button>`
-      : [2,3,4].map(n => `<button data-n="${n}" data-k="${esc(k)}">${n}分割</button>`).join("");
+      : [2,3,4].map(n => `<button data-n="${n}" data-k="${esc(k)}">${n}分割</button>`).join("")
+        + (added[k] ? `<button data-ed="${esc(k)}">内容を直す</button>` : "");
     document.getElementById("spNote").textContent = it.piece
       ? "分けた札をまとめて、元の1つに戻します（この札の場所に戻ります）。"
       : "必要時間と必要数を分割数で割って繰り上げます（必要時間は0.1h単位、必要数は1単位）。分けた札は1つずつ長押しで別の時刻へ動かせます。";
-    spDlg.style.display = "flex";
+    spDlg.style.display = "flex"; openedAt = performance.now();
   }
   function doSplit(k, n){
     const w = where(k); if(!w) return;
@@ -950,11 +986,42 @@ function fieldApp(){
     delete splits[bk]; rebuildItems(); saveOrder(); build();
   }
   document.getElementById("spBtns").addEventListener("click", e => {
-    const b = e.target.closest("button"); if(!b) return;
+    const b = e.target.closest("button"); if(!b || tooSoon()) return;
     spDlg.style.display = "none";
-    if(b.dataset.un) unSplit(b.dataset.un); else doSplit(b.dataset.k, +b.dataset.n);
+    if(b.dataset.un) unSplit(b.dataset.un); else if(b.dataset.ed) openForm({ k: b.dataset.ed }); else doSplit(b.dataset.k, +b.dataset.n);
   });
-  document.getElementById("spClose").addEventListener("click", () => spDlg.style.display = "none");
+  document.getElementById("spClose").addEventListener("click", () => { if(!tooSoon()) spDlg.style.display = "none"; });
+
+  /* ---------- 突発の品番を手入力（空いた欄をタップ）・内容を直す ---------- */
+  const fDlg = document.getElementById("addDlg"), F = id => document.getElementById(id);
+  let fFor = null;
+  function openForm(t){
+    fFor = t;
+    const a = t.k ? added[t.k] : { part:"", h:"", hanger:"", qty:"", ai:t.ai, ti:t.ti };
+    F("fTitle").textContent = (t.k ? "内容を直す" : "品番を手入力") + "（" + D.layout[a.ai].area + "　" + fmt(D.times[a.ti]) + "）";
+    F("fPart").value = a.part; F("fH").value = a.h; F("fHanger").value = a.hanger; F("fQty").value = a.qty;
+    F("fOk").textContent = t.k ? "直す" : "追加する"; F("fMsg").textContent = "";
+    fDlg.style.display = "flex"; openedAt = performance.now(); setTimeout(() => F("fPart").focus(), 50);
+  }
+  F("fCancel").addEventListener("click", () => { if(!tooSoon()) fDlg.style.display = "none"; });
+  F("fOk").addEventListener("click", () => {
+    if(tooSoon()) return;
+    const part = F("fPart").value.trim(), hs = F("fH").value.trim(), qs = F("fQty").value.trim();
+    // 入れ忘れ・打ちまちがいを止める（ポカヨケ）
+    if(!part){ F("fMsg").textContent = "品番（名称）を入れてください"; F("fPart").focus(); return; }
+    if(hs === "" || isNaN(+hs) || +hs < 0 || +hs > 24){ F("fMsg").textContent = "必要時間を 0〜24 の数で入れてください（例：0.5）"; F("fH").focus(); return; }
+    if(qs !== "" && (isNaN(+qs) || +qs < 0 || Math.floor(+qs) !== +qs)){ F("fMsg").textContent = "必要数は 0 以上の整数で入れてください"; F("fQty").focus(); return; }
+    const rec = { part: part, h: Math.round(+hs*10)/10, hanger: F("fHanger").value.trim(), qty: qs === "" ? "" : +qs };
+    if(fFor.k){ Object.assign(added[fFor.k], rec); }
+    else{
+      const k = "add:" + Date.now().toString(36);
+      added[k] = Object.assign(rec, { ai: fFor.ai, ti: fFor.ti });
+      if(!order[fFor.ai]) order[fFor.ai] = []; if(!order[fFor.ai][fFor.ti]) order[fFor.ai][fFor.ti] = [];
+      order[fFor.ai][fFor.ti].push(k);
+    }
+    fDlg.style.display = "none";
+    syncBase(); rebuildItems(); saveOrder(); build();
+  });
 
   /* ---------- 表の大きさ（縮小・拡大） ---------- */
   const wrap = document.getElementById("wrap"), zbox = document.getElementById("zbox");
@@ -1044,9 +1111,17 @@ function exportHtml(){
 <div class="chips" id="chips"></div>
 <div id="nojs" class="nojs">■ このページのしくみが動いていません（済み・並べ替えができません）。<br>ファイルのプレビューではなく、<b>Chrome で開いて</b>ください。Chrome で開いてもこの表示が出るときは、Chrome を最新にしてください。<span id="nojsMsg"></span></div>
 <div class="help">作業が終わったら<b>品番をタップ</b>すると「済」が付きます（もう一度タップで取り消し）。赤＝リミット時刻を過ぎて未完了。<br>
-順番を変えるときは<b>品番を長押し</b>して、入れたい所まで動かして指を離します（前後・別のエリア・別の時刻の列へ。青い線の所に入ります。別の時刻の列に入れると、その時刻がリミットになります）。1つの品番を2〜4回に分けるときは、<b>長押しして動かさずに指を離す</b>と分割メニューが出ます（色：2分割＝黄色、3分割＝薄黄、4分割＝薄いオレンジ）。生産がない品番は、長押しして下の<b>ゴミ箱</b>まで持っていくと外せます（「外した品番」から戻せます）。表の大きさは上の<b>－／＋／全体</b>か、表を<b>2本指で広げる・つまむ</b>と変えられます。記録はこの端末に残ります。</div>
+順番を変えるときは<b>品番を長押し</b>して、入れたい所まで動かして指を離します（前後・別のエリア・別の時刻の列へ。青い線の所に入ります。別の時刻の列に入れると、その時刻がリミットになります）。管理表にない突発の品番は、<b>空いた欄をタップ</b>すると手入力できます（青い色と「手入力」の印。ゴミ箱に入れるまで残ります）。1つの品番を2〜4回に分けるときは、<b>長押しして動かさずに指を離す</b>と分割メニューが出ます（色：2分割＝黄色、3分割＝薄黄、4分割＝薄いオレンジ）。生産がない品番は、長押しして下の<b>ゴミ箱</b>まで持っていくと外せます（「外した品番」から戻せます）。表の大きさは上の<b>－／＋／全体</b>か、表を<b>2本指で広げる・つまむ</b>と変えられます。記録はこの端末に残ります。</div>
 <div id="ghost"></div>
 <div id="trash">🗑<span>ここで離すと外す（生産がないとき）</span></div>
+<div id="addDlg"><div class="box"><div class="hd"><span id="fTitle"></span></div>
+  <label class="fl">品番（名称）<input id="fPart" type="text" placeholder="例：12345-67890"></label>
+  <label class="fl">必要時間（h）<input id="fH" type="number" inputmode="decimal" step="0.1" min="0" placeholder="例：0.5"></label>
+  <label class="fl">ハンガー<input id="fHanger" type="text" placeholder="例：4段"></label>
+  <label class="fl">必要数<input id="fQty" type="number" inputmode="numeric" step="1" min="0" placeholder="例：10"></label>
+  <div id="fMsg" class="fMsg"></div>
+  <div class="fBtns"><button id="fCancel">やめる</button><button id="fOk" class="ok">追加する</button></div>
+</div></div>
 <div id="spDlg"><div class="box"><div class="hd"><span id="spTitle"></span><button id="spClose">閉じる</button></div><div id="spBtns" class="spBtns"></div><div id="spNote" class="spNote"></div></div></div>
 <div id="rmDlg"><div class="box"><div class="hd">外した品番　<button id="rmClose">閉じる</button></div><div id="rmList"></div></div></div>
 <div class="wrap" id="wrap"><div id="zbox"><table class="lt">${tableHtml(M, true)}</table></div></div>
