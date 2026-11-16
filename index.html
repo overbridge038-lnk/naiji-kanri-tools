@@ -35,6 +35,8 @@ a.card:hover,a.card:focus-visible{box-shadow:0 4px 14px rgba(31,78,120,.2);trans
 .tag.ok{background:var(--okbg);color:var(--ok)}
 .flow{background:var(--card);border:1px solid var(--line);border-radius:10px;margin:0;padding:14px 16px 14px 36px;font-size:15px}
 .flow li{margin:4px 0}
+.local{background:var(--warnbg);border:2px solid #f2b84b;color:#5a3b00;border-radius:10px;padding:12px 14px;margin:16px 0 0;font-size:14px;line-height:1.7}
+.local .pub{display:inline-block;margin-top:6px;background:var(--navy);color:#fff;text-decoration:none;font-weight:bold;border-radius:8px;padding:8px 14px}
 .note{margin-top:28px;font-size:13px;color:var(--sub);background:var(--card);
   border:1px solid var(--line);border-radius:8px;padding:12px 14px}
 </style>
@@ -46,6 +48,12 @@ a.card:hover,a.card:focus-visible{box-shadow:0 4px 14px rgba(31,78,120,.2);trans
 </div></header>
 
 <main>
+  <div id="localNote" class="local" hidden>
+    <b>このページは、パソコンに保存したファイルで開いています。</b><br>
+    「開く」でツールが開かないときは、ツールのファイル（内示取込ツール.html・リミット表作成ツール.html）が
+    <b>このファイルと同じフォルダに、同じ名前で</b>あるか確かめてください（「(1)」などが付いていると開きません）。<br>
+    <a class="pub" href="https://overbridge038-lnk.github.io/naiji-kanri-tools/">公開ページ（いつも最新版）で開く ▶</a>
+  </div>
   <h2>使えるツール</h2>
   <div class="grid" id="ready"></div>
 
@@ -115,6 +123,8 @@ document.addEventListener("click", function(e){
   if(a) saveLast(a.getAttribute("data-file"));
 });
 window.addEventListener("pageshow", render);
+// 保存したファイル（file://）で開いたときは、ツールのファイルが同じフォルダにないと開かないので案内を出す
+if(location.protocol === "file:") document.getElementById("localNote").hidden = false;
 render();
 </script>
 </body>
