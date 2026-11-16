@@ -15,6 +15,7 @@
   body{margin:0;background:var(--bg);color:var(--ink);font-family:"Yu Gothic UI","游ゴシック","Meiryo",sans-serif;font-size:15px}
   header{background:var(--navy);color:#fff;padding:14px 20px;display:flex;align-items:center;gap:16px;flex-wrap:wrap}
   header h1{margin:0;font-size:22px}
+  header .ver{font-size:12px;background:rgba(255,255,255,.18);border-radius:20px;padding:2px 10px}
   header .steps{font-size:14px;opacity:.95;display:flex;gap:14px;flex-wrap:wrap}
   header .steps b{background:#fff;color:var(--navy);border-radius:50%;display:inline-block;width:22px;height:22px;text-align:center;line-height:22px;margin-right:4px}
   main{padding:16px 20px;max-width:1800px;margin:0 auto}
@@ -79,7 +80,7 @@
 </head>
 <body>
 <header>
-  <h1>掛け置き リミット表 作成ツール</h1>
+  <h1>掛け置き リミット表 作成ツール</h1><span class="ver">ver 2026-11-16</span>
   <div class="steps">
     <span><b>1</b>管理シート または 掛け置き管理表データ(.xlsx)をドロップ</span>
     <span><b>2</b>異常（赤・黄）を確認</span>
@@ -390,7 +391,11 @@ function parseKanri(sh){
     blank = 0;
     const part = String(pv).trim(), area = makerC && norm(V(r,makerC)) ? String(V(r,makerC)).trim() : "(メーカーなし)";
     const qv = V(r, qtyC), qtyRaw = typeof qv==="number" ? qv : (qv==null||qv==="" ? null : (isNaN(+qv) ? null : +qv));
-    const limRaw = V(r, limC), limit = toMinutes(limRaw);
+    const limRaw = V(r, limC);
+    // 管理シートの「0:00」（セルの値は 0 か 1）は 24時（その日のうち）として読む
+    const is24 = (typeof limRaw==="number" && (limRaw===0 || (limRaw>=1 && limRaw===Math.floor(limRaw))))
+              || (typeof limRaw==="string" && /^\s*(0?0|24)[:：]00/.test(limRaw));
+    const limit = is24 ? 1440 : toMinutes(limRaw);
     if(limit==null){
       if(limRaw!=null && limRaw!=="") issues.push({lv:"ng", area, part, cell:idxToCol(limC)+r, msg:"生産リミット時間が読めません（"+limRaw+"）→ リミット表に載りません"});
       else if(qtyRaw>0) issues.push({lv:"ng", area, part, cell:idxToCol(limC)+r, msg:"生産リミット時間が空欄（日当り "+qtyRaw+" 箱あり）→ リミット表に載りません"});
