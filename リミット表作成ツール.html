@@ -81,7 +81,7 @@
 <header>
   <h1>掛け置き リミット表 作成ツール</h1>
   <div class="steps">
-    <span><b>1</b>掛け置き管理表データ(.xlsx)をドロップ</span>
+    <span><b>1</b>管理シート または 掛け置き管理表データ(.xlsx)をドロップ</span>
     <span><b>2</b>異常（赤・黄）を確認</span>
     <span><b>3</b>Excel出力・印刷・HTML出力（現場のタブレットで済みチェック）</span>
   </div>
@@ -89,7 +89,7 @@
 <main>
   <div class="card noprint">
     <div id="drop">
-      <div class="big">ここに「掛け置き管理表データ」の Excel をドロップ</div>
+      <div class="big">ここに「管理シート」または「掛け置き管理表データ」の Excel をドロップ</div>
       <div class="small">またはクリックしてファイルを選択（.xlsx / .xlsm）※ネット接続不要・データは外部に送信されません</div>
       <input type="file" id="file" accept=".xlsx,.xlsm" class="hidden">
     </div>
@@ -149,6 +149,7 @@
       <details>
         <summary>読み取りルール（標準）</summary>
         <ul class="muted">
+          <li><b>管理シート（G列「生産リミット時間」がある形）</b>のときは、1行＝1品番として読みます。行の見出し＝メーカー、リミット時刻＝生産リミット時間、必要時間＝コンベアー付帯作業工数の「着荷」（当月）、ハンガー＝塗装条件のハンガー、必要数＝日当り数（箱）・素材（当月）。生産リミット時間が空欄で日当り数（箱）もない品番は生産なしとして読みません。空欄なのに箱数がある品番はNGとして表示します。</li>
           <li>「必要時間」と書かれた行を見つけ、その1行上を<b>作業エリア（I2・J1…）＋品番</b>の行として読みます。</li>
           <li>同じエリアの下の行から「リミット時間」「ハンガー種類」「日あたり必要数」を読みます。行の追加・エリアの追加にも自動で対応します。</li>
           <li>リミット時刻の列は、データに出てくる時刻を早い順に自動で並べます（9:00/10:00/…）。</li>
@@ -363,6 +364,50 @@ function parseSheet(sh){
   return { areas, issues, sheet: sh.name };
 }
 
+/* 管理シート（G列「生産リミット時間」がある形）を読む。1行＝1品番。
+   行（作業エリアの代わり）＝メーカー、品番、リミット＝生産リミット時間、必要時間＝付帯作業工数の着荷（当月）、
+   ハンガー＝塗装条件のハンガー、必要数＝日当り数（箱）・素材（当月） */
+function parseKanri(sh){
+  const G = (r,c) => (sh.grid[r]||{})[c];
+  const V = (r,c) => { const x=G(r,c); return x? x.v : null; };
+  const K = v => norm(String(v==null?"":v).normalize("NFKC"));
+  let hr=null, limC=null;
+  for(let r=1;r<=Math.min(sh.maxR,20) && !hr;r++) for(let c=1;c<=sh.maxC;c++) if(K(V(r,c))==="生産リミット時間"){ hr=r; limC=c; break; }
+  if(!hr) return null;
+  const findIn = (r, test, from) => { for(let c=from||1;c<=sh.maxC;c++) if(test(K(V(r,c)))) return c; return null; };
+  const partC = findIn(hr, t => t==="品番"), makerC = findIn(hr, t => t==="メーカー");
+  const qtyC = findIn(hr, t => t.indexOf("日当り数(箱)")>=0 && t.indexOf("素材")>=0);
+  const paintC = findIn(hr, t => t==="塗装条件");
+  const hangerC = paintC ? findIn(hr+1, t => t==="ハンガー", paintC) : findIn(hr+1, t => t==="ハンガー");
+  let hourC = null;
+  for(let r=Math.max(1,hr-2);r<=hr && !hourC;r++){ const c0 = findIn(r, t => t.indexOf("付帯作業工数")>=0); if(c0) hourC = findIn(hr+1, t => t==="着荷", c0); }
+  if(!partC || !qtyC || !hourC) return null;
+  const month = +V(hr+1, qtyC) || null;   // 当月（例：11）
+  const byMaker = new Map(), issues = []; let blank = 0;
+  for(let r=hr+2; r<=sh.maxR; r++){
+    const pv = V(r, partC);
+    if(pv==null || norm(pv)===""){ if(++blank>15) break; continue; }
+    blank = 0;
+    const part = String(pv).trim(), area = makerC && norm(V(r,makerC)) ? String(V(r,makerC)).trim() : "(メーカーなし)";
+    const qv = V(r, qtyC), qtyRaw = typeof qv==="number" ? qv : (qv==null||qv==="" ? null : (isNaN(+qv) ? null : +qv));
+    const limRaw = V(r, limC), limit = toMinutes(limRaw);
+    if(limit==null){
+      if(limRaw!=null && limRaw!=="") issues.push({lv:"ng", area, part, cell:idxToCol(limC)+r, msg:"生産リミット時間が読めません（"+limRaw+"）→ リミット表に載りません"});
+      else if(qtyRaw>0) issues.push({lv:"ng", area, part, cell:idxToCol(limC)+r, msg:"生産リミット時間が空欄（日当り "+qtyRaw+" 箱あり）→ リミット表に載りません"});
+      continue;   // 空欄で数もない品番は生産なしとして読まない
+    }
+    const hv = V(r, hourC), hanger = hangerC ? V(r, hangerC) : null;
+    const it = { area, part, col:partC, ref:idxToCol(partC)+r, hours: typeof hv==="number" ? hv : 0, split:1, limit,
+                 hanger: hanger && typeof hanger==="object" ? null : hanger, qtyRaw };
+    if(!(it.hours>0)) issues.push({lv:"warn", area, part, cell:idxToCol(hourC)+r, msg:"必要時間（付帯作業工数・着荷）が0"});
+    if(it.hanger==null || norm(it.hanger)==="" || norm(it.hanger)==="0") issues.push({lv:"warn", area, part, cell: hangerC?idxToCol(hangerC)+r:"", msg:"ハンガーが空欄／0"});
+    if(!(typeof qtyRaw==="number" && qtyRaw>0)) issues.push({lv:"warn", area, part, cell:idxToCol(qtyC)+r, msg:"日当り数（箱）が0／空欄"});
+    if(!byMaker.has(area)) byMaker.set(area, { area, items:[], row:r });
+    byMaker.get(area).items.push(it);
+  }
+  return { areas:[...byMaker.values()], issues, sheet: sh.name, month, rowLabel: "メーカー ＼ リミット時間" };
+}
+
 /* =========================================================
    3) リミット表モデルを作る（画面・Excel共通）
    ========================================================= */
@@ -377,7 +422,7 @@ function buildModel(p){
   // タイトル
   put(1,1,$("month").value.trim(),"title"); put(1,2,$("title").value.trim(),"title"); merge(1,2,1,Math.min(nCol,12)); heights[1]=36;
   // 見出し
-  put(3,1,"作業エリア ＼ リミット時間","hdr corner"); merge(3,1,4,1);
+  put(3,1,p.rowLabel || "作業エリア ＼ リミット時間","hdr corner"); merge(3,1,4,1);
   times.forEach((m,ti)=>{ put(3,gcol(ti,0),fmtTime(m),"hdr"); for(let k=1;k<4;k++) put(3,gcol(ti,k),"","hdr"); merge(3,gcol(ti,0),3,gcol(ti,3)); });
   times.forEach((m,ti)=>["品番","必要時間","ハンガー","必要数"].forEach((h,k)=>put(4,gcol(ti,k),h,"sub")));
   put(4,1,"","hdr corner");
@@ -1250,14 +1295,17 @@ async function handleFile(file){
   }
   try{
     const sheets = await readXlsx(await file.arrayBuffer());
-    // 「必要時間」行が一番多いシートを自動で選ぶ
+    // 「生産リミット時間」の列がある管理シートなら、それを使う（行＝メーカー）
     let best=null;
-    for(const sh of sheets){ const p = parseSheet(sh); if(!best || p.areas.length > best.areas.length) best = p; }
+    for(const sh of sheets){ const p = parseKanri(sh); if(p && p.areas.length && (!best || p.areas.length > best.areas.length)) best = p; }
+    if(best && best.month) $("month").value = best.month + "月度";
+    // なければ、今までどおり「必要時間」行が一番多いシート（掛け置き管理表データ）を選ぶ
+    if(!best) for(const sh of sheets){ const p = parseSheet(sh); if(!best || p.areas.length > best.areas.length) best = p; }
     if(!best || !best.areas.length){
       st.className="ng"; st.textContent="■ NG：「必要時間」の行が見つかりません。掛け置き管理表データのファイルか確認してください"; $("result").classList.add("hidden"); return;
     }
     // 月度：ファイル名に「○月」があれば使う
-    const mm = file.name.match(/(\d{1,2})月/); if(mm) $("month").value = (+mm[1])+"月度";
+    const mm = file.name.match(/(\d{1,2})月/); if(mm && !best.month) $("month").value = (+mm[1])+"月度";
     parsed = best; refresh();
   }catch(e){
     console.error(e);
