@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23c5221f'/%3E%3Ccircle cx='32' cy='33' r='21' fill='%23fff'/%3E%3Cpath d='M32 19v15l10 6' stroke='%23c5221f' stroke-width='5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 <title>リミット表 作成ツール</title>
 <style>
   :root{
@@ -110,6 +111,9 @@
       <label class="f">用紙
         <select id="paper"><option value="8">A3 横</option><option value="9">A4 横</option></select>
       </label>
+      <label class="f">Excelの印刷
+        <select id="fit"><option value="one">1枚に全部入れる</option><option value="width">横幅だけ1枚・縦は複数ページ</option></select>
+      </label>
       <div style="flex:1"></div>
       <button class="btn-main" id="btnXlsx" disabled>Excel出力（リミット表）</button>
       <button class="btn-sub" id="btnPrint" disabled>印刷</button>
@@ -205,11 +209,12 @@ function loadPrefs(){
     if(p.round) $("round").value = p.round;
     if(p.workh) $("workh").value = p.workh;
     if(p.paper) $("paper").value = p.paper;
+    if(p.fit) $("fit").value = p.fit;
   }catch(e){}
   $("month").value = (new Date().getMonth()+1) + "月度";
 }
 function savePrefs(){
-  try{ localStorage.setItem("limitTool.prefs", JSON.stringify({title:$("title").value, round:$("round").value, workh:$("workh").value, paper:$("paper").value})); }catch(e){}
+  try{ localStorage.setItem("limitTool.prefs", JSON.stringify({title:$("title").value, round:$("round").value, workh:$("workh").value, paper:$("paper").value, fit:$("fit").value})); }catch(e){}
 }
 
 /* ---------- 共通 ---------- */
@@ -642,7 +647,7 @@ async function exportXlsx(){
   }
   const mergesXml = M.merges.length ? `<mergeCells count="${M.merges.length}">${M.merges.map(g=>`<mergeCell ref="${idxToCol(g.c1)+g.r1}:${idxToCol(g.c2)+g.r2}"/>`).join("")}</mergeCells>` : "";
   const sheet = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheetPr><pageSetUpPr fitToPage="1"/></sheetPr><dimension ref="A1:${idxToCol(M.nCol)+M.nRow}"/><sheetViews><sheetView tabSelected="1" zoomScale="70" workbookViewId="0"><pane xSplit="1" ySplit="4" topLeftCell="B5" activePane="bottomRight" state="frozen"/></sheetView></sheetViews><sheetFormatPr defaultRowHeight="18"/><cols>${cols}</cols><sheetData>${rowsXml}</sheetData>${mergesXml}<printOptions horizontalCentered="1"/><pageMargins left="0.3" right="0.3" top="0.4" bottom="0.4" header="0.2" footer="0.2"/><pageSetup paperSize="${$("paper").value}" orientation="landscape" fitToWidth="1" fitToHeight="1"/></worksheet>`;
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheetPr><pageSetUpPr fitToPage="1"/></sheetPr><dimension ref="A1:${idxToCol(M.nCol)+M.nRow}"/><sheetViews><sheetView tabSelected="1" zoomScale="70" workbookViewId="0"><pane xSplit="1" ySplit="4" topLeftCell="B5" activePane="bottomRight" state="frozen"/></sheetView></sheetViews><sheetFormatPr defaultRowHeight="18"/><cols>${cols}</cols><sheetData>${rowsXml}</sheetData>${mergesXml}<printOptions horizontalCentered="1"/><pageMargins left="0.3" right="0.3" top="0.4" bottom="0.4" header="0.2" footer="0.2"/><pageSetup paperSize="${$("paper").value}" orientation="landscape" fitToWidth="1" fitToHeight="${$("fit").value==="width"?0:1}"/></worksheet>`;
 
   const zip = new JSZip();
   zip.file("[Content_Types].xml", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -650,7 +655,7 @@ async function exportXlsx(){
   zip.file("_rels/.rels", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`);
   zip.file("xl/workbook.xml", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="リミット表" sheetId="1" r:id="rId1"/></sheets><definedNames><definedName name="_xlnm.Print_Area" localSheetId="0">'リミット表'!$A$1:$${idxToCol(M.nCol)}$${M.nRow}</definedName></definedNames></workbook>`);
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="リミット表" sheetId="1" r:id="rId1"/></sheets><definedNames><definedName name="_xlnm.Print_Area" localSheetId="0">'リミット表'!$A$1:$${idxToCol(M.nCol)}$${M.nRow}</definedName>${$("fit").value==="width"?`<definedName name="_xlnm.Print_Titles" localSheetId="0">'リミット表'!$3:$4</definedName>`:""}</definedNames></workbook>`);
   zip.file("xl/_rels/workbook.xml.rels", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`);
   zip.file("xl/worksheets/sheet1.xml", sheet);
@@ -1270,6 +1275,7 @@ function exportHtml(){
   const data = JSON.stringify({ id: h.toString(36), times: M.times, layout: M.layout }).replace(/</g,"\\u003c");
   const page = `<!DOCTYPE html>
 <html lang="ja"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23c5221f'/%3E%3Ccircle cx='32' cy='33' r='21' fill='%23fff'/%3E%3Cpath d='M32 19v15l10 6' stroke='%23c5221f' stroke-width='5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 <title>${esc(month)} ${esc(title)} リミット表</title><style>${FIELD_CSS}</style></head>
 <body>
 <header>
@@ -1347,7 +1353,7 @@ $("file").addEventListener("change", e=>{ if(e.target.files[0]) handleFile(e.tar
 ["dragenter","dragover"].forEach(ev=>document.addEventListener(ev, e=>{ e.preventDefault(); drop.classList.add("over"); }));
 ["dragleave","drop"].forEach(ev=>document.addEventListener(ev, e=>{ e.preventDefault(); if(ev==="drop"||e.target===drop) drop.classList.remove("over"); }));
 document.addEventListener("drop", e=>{ const f=e.dataTransfer.files[0]; if(f) handleFile(f); });
-["month","title","round","workh","paper"].forEach(id=>$(id).addEventListener("change", ()=>{ savePrefs(); refresh(); }));
+["month","title","round","workh","paper","fit"].forEach(id=>$(id).addEventListener("change", ()=>{ savePrefs(); refresh(); }));
 $("ack").addEventListener("change", updateButtons);
 $("btnXlsx").addEventListener("click", exportXlsx);
 $("btnPrint").addEventListener("click", ()=>window.print());
