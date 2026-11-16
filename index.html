@@ -16,6 +16,7 @@ header{background:var(--navy);color:#fff;padding:18px 16px}
 header .in{max-width:1000px;margin:0 auto}
 header h1{margin:0;font-size:24px}
 header p{margin:4px 0 0;font-size:14px;opacity:.85}
+header .ver{display:inline-block;margin-left:10px;font-size:12px;font-weight:normal;background:rgba(255,255,255,.18);border-radius:20px;padding:2px 10px;vertical-align:middle}
 main{max-width:1000px;margin:0 auto;padding:20px 16px 40px}
 h2{font-size:17px;color:var(--navy);margin:24px 0 10px;
   border-left:5px solid var(--navy);padding-left:8px}
@@ -40,7 +41,7 @@ a.card:hover,a.card:focus-visible{box-shadow:0 4px 14px rgba(31,78,120,.2);trans
 </head>
 <body>
 <header><div class="in">
-  <h1>掛け置き管理ツール</h1>
+  <h1>掛け置き管理ツール<span class="ver">ver 2026-11-16</span></h1>
   <p>使うツールのボタンを押してください。</p>
 </div></header>
 
@@ -51,8 +52,8 @@ a.card:hover,a.card:focus-visible{box-shadow:0 4px 14px rgba(31,78,120,.2);trans
   <h2>使う順番</h2>
   <ol class="flow">
     <li><b>内示 取込ツール</b>に「管理シート（ひな形）」と各社の内示を入れて、稼働日数を入れ、<b>管理シート</b>を出す</li>
-    <li>管理シートの G列「生産リミット時間」を確かめる</li>
-    <li><b>リミット表 作成ツール</b>に管理シートを入れて、<b>リミット表</b>（Excel・印刷）と<b>現場用HTML</b>を出す</li>
+    <li>管理シートの G列「生産リミット時間」を確かめる（<b>0:00 は 24時</b>のリミットとして読みます）</li>
+    <li><b>リミット表 作成ツール</b>に管理シートを入れて、<b>リミット表</b>（Excel・印刷）と<b>現場用HTML</b>を出す。行はメーカーごと、横はリミット時間の早い順（9:00 → 24:00）に並びます</li>
     <li>現場用HTMLをタブレットに保存して、<b>Chrome で開いて</b>使う（Google Drive などのプレビューでは動きません）</li>
   </ol>
 
@@ -72,7 +73,7 @@ var TOOLS = [
   {file:"内示取込ツール.html", name:"内示 取込ツール",
    desc:"客先の内示（CSV・PDF・Excel .xlsx／.xls）、出荷実績表、素材支給計画を読み込んで、掛け置き作業の「管理シート」(Excel) を出します。"},
   {file:"リミット表作成ツール.html", name:"リミット表 作成ツール",
-   desc:"管理シート（生産リミット時間）から「リミット表」を作り、Excel・印刷・現場用HTMLで出します。時刻の列は1時間ごとに 0:00 まで自動で作ります。現場用HTMLはタブレットで済みチェック・並べ替え・分割・手入力・Excel出力ができます。"}
+   desc:"管理シート（生産リミット時間。0:00は24時）から、メーカーごと・リミット時間の早い順の「リミット表」を作り、Excel・印刷・現場用HTMLで出します。時刻の列は1時間ごとに24:00まで自動で作ります。現場用HTMLはタブレットで済みチェック・並べ替え・分割・手入力・Excel出力ができます。"}
 ];
 
 var STORE_KEY = "dashboard_lastOpened";
