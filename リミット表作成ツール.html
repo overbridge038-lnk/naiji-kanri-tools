@@ -152,7 +152,7 @@
           <li><b>管理シート（G列「生産リミット時間」がある形）</b>のときは、1行＝1品番として読みます。行の見出し＝メーカー、リミット時刻＝生産リミット時間、必要時間＝コンベアー付帯作業工数の「着荷」（当月）、ハンガー＝塗装条件のハンガー、必要数＝日当り数（箱）・素材（当月）。生産リミット時間が空欄で日当り数（箱）もない品番は生産なしとして読みません。空欄なのに箱数がある品番はNGとして表示します。</li>
           <li>「必要時間」と書かれた行を見つけ、その1行上を<b>作業エリア（I2・J1…）＋品番</b>の行として読みます。</li>
           <li>同じエリアの下の行から「リミット時間」「ハンガー種類」「日あたり必要数」を読みます。行の追加・エリアの追加にも自動で対応します。</li>
-          <li>リミット時刻の列は、データに出てくる時刻を早い順に自動で並べます（9:00/10:00/…）。</li>
+          <li>リミット時刻の列は、いちばん早い時刻からいちばん遅い時刻まで<b>1時間ごと</b>に自動で作ります（品番のない時間も空いた列になります）。<b>0:00 は1日の終わり</b>として右端に置き、0:00 があれば 0:00 まで作ります。</li>
           <li>必要時間は「(0.6h)」の形で小数1桁。0.1h未満は「(0.0h)」。必要数は設定に従い整数化します。</li>
           <li>リミット時間が空欄の品番は<b>NG（表に載せない）</b>として先頭に表示します。必要時間0・ハンガー空欄・必要数0は<b>注意</b>（管理シートに未登録の可能性）。</li>
           <li>Excelの数式は「最後に保存されたときの計算結果」を読みます。管理表を開いて再計算・保存してからドロップしてください。</li>
@@ -218,21 +218,22 @@ function idxToCol(n){ let s=""; while(n>0){ const m=(n-1)%26; s=String.fromCharC
 function esc(s){ return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
 
 /* 時刻を「分」に変換（Excelの時刻シリアル値 / "10:00" 文字列 どちらも可） */
+/* 時刻 → 分。0:00 は1日の終わり（24:00 ＝ 1440分）として、表のいちばん右に置く */
 function toMinutes(v){
   if(v==null || v==="") return null;
+  let m = null;
   if(typeof v === "number"){
     const frac = v - Math.floor(v);              // 日付付きでも時刻部分だけ使う
-    if(v>=1 && frac===0) return null;            // 日付だけ（時刻なし）は読めない扱い
-    return Math.round(frac * 1440) % 1440;
+    m = Math.round(frac * 1440) % 1440;          // Excelの「1900/1/1 0:00」（＝1）は 0:00
+  }else{
+    const s = String(v).replace(/：/g,":").trim();
+    const mm = s.match(/^(\d{1,2}):(\d{2})/);
+    if(mm) m = ((+mm[1])*60 + (+mm[2])) % 1440;
+    else { const n = Number(s); if(!isNaN(n) && n>=0 && n<1) m = Math.round(n*1440) % 1440; }
   }
-  const s = String(v).replace(/：/g,":").trim();
-  const mm = s.match(/^(\d{1,2}):(\d{2})/);
-  if(mm) return (+mm[1])*60 + (+mm[2]);
-  const n = Number(s);
-  if(!isNaN(n) && n>0 && n<1) return Math.round(n*1440);
-  return null;
+  return m === 0 ? 1440 : m;
 }
-const fmtTime = m => Math.floor(m/60) + ":" + String(m%60).padStart(2,"0");
+const fmtTime = m => m >= 1440 ? "0:00" : Math.floor(m/60) + ":" + String(m%60).padStart(2,"0");
 function fmtHour(h){
   if(!(h>0)) return "(0.0h)";
   if(h < 0.1) return "(0.0h)";
@@ -290,7 +291,7 @@ async function readXlsx(buf){
       else if(t==="str") v = v==null?"":v;
       else if(v!=null) v = Number(v);
       if(v==null && !fEl) continue;
-      (grid[row] ||= {})[col] = { v, f: fEl ? fEl.textContent : "", ref };
+      (grid[row] ||= {})[col] = { v, f: fEl ? fEl.textContent : "", hasF: !!fEl, ref };   // hasF：式がある（共有式も）
       if(row>maxR) maxR=row; if(col>maxC) maxC=col;
     }
     out.push({ name: sh.name, grid, maxR, maxC });
@@ -383,21 +384,41 @@ function parseKanri(sh){
   for(let r=Math.max(1,hr-2);r<=hr && !hourC;r++){ const c0 = findIn(r, t => t.indexOf("付帯作業工数")>=0); if(c0) hourC = findIn(hr+1, t => t==="着荷", c0); }
   if(!partC || !qtyC || !hourC) return null;
   const month = +V(hr+1, qtyC) || null;   // 当月（例：11）
-  const byMaker = new Map(), issues = []; let blank = 0;
+  // 式の計算結果が保存されていないファイル（内示取込ツールから出してExcelで開かずに使ったときなど）のため、
+  // 日当り数・箱数・着荷の時間は、元の数（月産数・稼働日数・収容数・基準時間）からも計算できるようにしておく
+  const monC = findIn(hr, t => t==="月産数");
+  const capC0 = findIn(hr, t => t==="素材"), capC = capC0 ? findIn(hr+1, t => t==="収容数", capC0) : null;
+  let baseC = null;
+  for(let r=Math.max(1,hr-2);r<=hr && !baseC;r++){ const c0 = findIn(r, t => t.indexOf("基準時間")>=0); if(c0) baseC = findIn(hr, t => t==="着荷", c0) || findIn(hr+1, t => t==="着荷", c0); }
+  let days = null;
+  for(let r=1;r<hr && !days;r++){ const c0 = findIn(r, t => t==="稼働日数"); if(!c0) continue;
+    for(let c=c0+1;c<=c0+6;c++) if(+V(r,c)===month){ days = +V(r+1,c) || null; break; } }
+  const daily = r => { const mq = monC ? +V(r,monC) : NaN; return mq>0 && days>0 ? mq/days : null; };
+  let recalc = 0;
+  const byMaker = new Map(), issues = []; let blank = 0, tMin = null, tMax = null;
   for(let r=hr+2; r<=sh.maxR; r++){
     const pv = V(r, partC);
     if(pv==null || norm(pv)===""){ if(++blank>15) break; continue; }
     blank = 0;
     const part = String(pv).trim(), area = makerC && norm(V(r,makerC)) ? String(V(r,makerC)).trim() : "(メーカーなし)";
-    const qv = V(r, qtyC), qtyRaw = typeof qv==="number" ? qv : (qv==null||qv==="" ? null : (isNaN(+qv) ? null : +qv));
+    const qv = V(r, qtyC);
+    let qtyRaw = typeof qv==="number" ? qv : (qv==null||qv==="" ? null : (isNaN(+qv) ? null : +qv));
+    const dl = daily(r), cap = capC ? +V(r,capC) : NaN;
+    const isF = c => { const x = G(r,c); return !!(x && x.hasF); };   // 式の入ったセルだけ計算し直す（式のない0・空欄はそのまま）
+    if(!(qtyRaw>0) && isF(qtyC) && dl && cap>0){ qtyRaw = Math.ceil(dl/cap - 1e-9); recalc++; }   // 箱数＝日当り数÷収容数（切り上げ）
     const limRaw = V(r, limC), limit = toMinutes(limRaw);
+    if(limit!=null){ tMin = tMin==null ? limit : Math.min(tMin, limit); tMax = tMax==null ? limit : Math.max(tMax, limit); }   // 表の時刻の範囲（生産なしの行も入れる）
+    if(limit===1440 && !(qtyRaw>0)) continue;   // 0:00 で箱数もない行は生産なし（表は 0:00 まで作る）
     if(limit==null){
       if(limRaw!=null && limRaw!=="") issues.push({lv:"ng", area, part, cell:idxToCol(limC)+r, msg:"生産リミット時間が読めません（"+limRaw+"）→ リミット表に載りません"});
       else if(qtyRaw>0) issues.push({lv:"ng", area, part, cell:idxToCol(limC)+r, msg:"生産リミット時間が空欄（日当り "+qtyRaw+" 箱あり）→ リミット表に載りません"});
       continue;   // 空欄で数もない品番は生産なしとして読まない
     }
     const hv = V(r, hourC), hanger = hangerC ? V(r, hangerC) : null;
-    const it = { area, part, col:partC, ref:idxToCol(partC)+r, hours: typeof hv==="number" ? hv : 0, split:1, limit,
+    let hours = typeof hv==="number" ? hv : 0;
+    const base = baseC ? +V(r,baseC) : NaN;
+    if(!(hours>0) && isF(hourC) && dl && base>0){ hours = base * dl / 3600; recalc++; }   // 着荷の時間＝基準時間（着荷・秒）×日当り数÷3600
+    const it = { area, part, col:partC, ref:idxToCol(partC)+r, hours, split:1, limit,
                  hanger: hanger && typeof hanger==="object" ? null : hanger, qtyRaw };
     if(!(it.hours>0)) issues.push({lv:"warn", area, part, cell:idxToCol(hourC)+r, msg:"必要時間（付帯作業工数・着荷）が0"});
     if(it.hanger==null || norm(it.hanger)==="" || norm(it.hanger)==="0") issues.push({lv:"warn", area, part, cell: hangerC?idxToCol(hangerC)+r:"", msg:"ハンガーが空欄／0"});
@@ -405,14 +426,20 @@ function parseKanri(sh){
     if(!byMaker.has(area)) byMaker.set(area, { area, items:[], row:r });
     byMaker.get(area).items.push(it);
   }
-  return { areas:[...byMaker.values()], issues, sheet: sh.name, month, rowLabel: "メーカー ＼ リミット時間" };
+  if(recalc) issues.unshift({lv:"warn", area:"（全体）", part:"—", cell:"", msg:`式の計算結果が保存されていなかったため、日当り数（箱）・必要時間を月産数・稼働日数（${days}日）・収容数・基準時間からツールで計算しました（${recalc}か所）。気になるときは管理シートをExcelで開いて保存し直してください`});
+  return { areas:[...byMaker.values()], issues, sheet: sh.name, month, rowLabel: "メーカー ＼ リミット時間", timeRange: tMin==null ? null : [tMin, tMax] };
 }
 
 /* =========================================================
    3) リミット表モデルを作る（画面・Excel共通）
    ========================================================= */
 function buildModel(p){
-  const times = [...new Set(p.areas.flatMap(a=>a.items.map(i=>i.limit)).filter(m=>m!=null))].sort((a,b)=>a-b);
+  // リミット時刻の列：データに出てくる時刻＋そのあいだの1時間ごと（あいた時間も列を作る。0:00 があれば 0:00 まで）
+  const used = [...new Set(p.areas.flatMap(a=>a.items.map(i=>i.limit)).filter(m=>m!=null))];
+  const lo = Math.min(...used, p.timeRange ? p.timeRange[0] : Infinity), hi = Math.max(...used, p.timeRange ? p.timeRange[1] : -Infinity);
+  const tset = new Set(used);
+  if(isFinite(lo) && isFinite(hi)) for(let m=Math.ceil(lo/60)*60; m<=hi; m+=60) tset.add(m);
+  const times = [...tset].sort((a,b)=>a-b);
   const nCol = 1 + times.length*4;
   const rows = []; const merges = []; const heights = [];
   const put = (r,c,v,st,extra) => { (rows[r] ||= [])[c] = Object.assign({v, st}, extra||{}); };
@@ -728,7 +755,7 @@ function fieldApp(){
   const pad = n => (n<10 ? "0" : "") + n;   // 古いタブレットのブラウザでも動く書き方にしている
   const esc = s => String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
   const today = () => { const d=new Date(); return d.getFullYear()+"-"+pad(d.getMonth()+1)+"-"+pad(d.getDate()); };
-  const fmt = m => Math.floor(m/60) + ":" + pad(m%60);
+  const fmt = m => m >= 1440 ? "0:00" : Math.floor(m/60) + ":" + pad(m%60);
   const get = (k, def) => { try{ return JSON.parse(localStorage.getItem(k)) || def; }catch(e){ return def; } };
   const put = (k, v) => { try{ localStorage.setItem(k, JSON.stringify(v)); }catch(e){ alert("この端末では記録を保存できません（プライベートモードなど）。画面を閉じると消えます"); } };
   const doneKey  = () => "limitDone:" + D.id + ":" + today();   // 済み：日付が変わると、新しい日の記録になる
@@ -1238,7 +1265,7 @@ function exportHtml(){
   const month = $("month").value.trim(), title = $("title").value.trim();
   const keys = M.rows.flat().filter(c=>c && c.pk).map(c=>c.key);
   // 同じ表を作り直しても済みの記録が引き継がれるよう、月度・表題・品番の並びから印（id）を作る
-  let h = 0; for(const ch of month+"|"+title+"|"+keys.join(",")) h = (h*31 + ch.charCodeAt(0)) >>> 0;
+  let h = 0; for(const ch of month+"|"+title+"|"+M.times.join(",")+"|"+keys.join(",")) h = (h*31 + ch.charCodeAt(0)) >>> 0;   // 時刻の列が変わったら別の記録にする
   const data = JSON.stringify({ id: h.toString(36), times: M.times, layout: M.layout }).replace(/</g,"\\u003c");
   const page = `<!DOCTYPE html>
 <html lang="ja"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
