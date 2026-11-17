@@ -81,7 +81,7 @@
 </head>
 <body>
 <header>
-  <h1>掛け置き リミット表 作成ツール</h1><span class="ver">ver 2026-11-16</span>
+  <h1>掛け置き リミット表 作成ツール</h1><span class="ver">ver 2026-11-17</span>
   <div class="steps">
     <span><b>1</b>管理シート または 掛け置き管理表データ(.xlsx)をドロップ</span>
     <span><b>2</b>異常（赤・黄）を確認</span>
@@ -1360,5 +1360,6 @@ $("btnPrint").addEventListener("click", ()=>window.print());
 $("btnHtml").addEventListener("click", exportHtml);
 loadPrefs();
 </script>
+<script>/* オフライン保存（Wi-Fiがあれば最新版、なければ最後に開いた版で動く） */if('serviceWorker' in navigator&&(location.protocol==='https:'||location.hostname==='localhost'))navigator.serviceWorker.register('sw.js').catch(function(){});</script>
 </body>
 </html>

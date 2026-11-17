@@ -44,7 +44,7 @@ a.card:hover,a.card:focus-visible{box-shadow:0 4px 14px rgba(31,78,120,.2);trans
 </head>
 <body>
 <header><div class="in">
-  <h1>掛け置き管理ツール<span class="ver">ver 2026-11-16</span></h1>
+  <h1>掛け置き管理ツール<span class="ver">ver 2026-11-17</span></h1>
   <p>使うツールのボタンを押してください。</p>
 </div></header>
 
@@ -128,5 +128,6 @@ window.addEventListener("pageshow", render);
 if(location.protocol === "file:") document.getElementById("localNote").hidden = false;
 render();
 </script>
+<script>/* オフライン保存（Wi-Fiがあれば最新版、なければ最後に開いた版で動く） */if('serviceWorker' in navigator&&(location.protocol==='https:'||location.hostname==='localhost'))navigator.serviceWorker.register('sw.js').catch(function(){});</script>
 </body>
 </html>
